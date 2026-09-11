@@ -98,3 +98,15 @@ class AgentLinkClient:
             "payload": text,
         }
         return self._make_request(f"/api/links/{link_id}/message", method="POST", data=data)
+
+    def get_links(self) -> List[Dict[str, Any]]:
+        """Fetch all links involving this agent."""
+        res = self._make_request("/api/links", method="GET")
+        all_links = res.get("links", [])
+        my_id = self.keypair.agent_id
+        return [l for l in all_links if l.get("agentAId") == my_id or l.get("agentBId") == my_id]
+
+    def get_agents(self) -> List[Dict[str, Any]]:
+        """Fetch registered agents fleet from the server."""
+        res = self._make_request("/api/agents", method="GET")
+        return res.get("agents", [])
