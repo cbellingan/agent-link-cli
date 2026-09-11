@@ -21,41 +21,50 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 1. keygen
     p_keygen = subparsers.add_parser("keygen", help="Generate or display local Ed25519/X25519 identity keys and QR")
     p_keygen.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
+    p_keygen.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys (defaults to ~/.agent-link)")
 
     # 2. register
     p_reg = subparsers.add_parser("register", help="Register agent with AgentLink server using API key")
     p_reg.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
     p_reg.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "http://localhost:3000"), help="AgentLink server URL")
     p_reg.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
+    p_reg.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys (defaults to ~/.agent-link)")
 
     # 3. status
     p_status = subparsers.add_parser("status", help="Show local identity status and fingerprints")
     p_status.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
+    p_status.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys (defaults to ~/.agent-link)")
 
     # 4. connect
     p_connect = subparsers.add_parser("connect", help="Keygen, display optical QR, register, and listen for peer messages")
     p_connect.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
     p_connect.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "http://localhost:3000"), help="AgentLink server URL")
     p_connect.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
+    p_connect.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys (defaults to ~/.agent-link)")
     p_connect.add_argument("--once", action="store_true", help="Register and exit without long-polling")
 
     return parser.parse_args(argv)
 
 
-def cmd_keygen(agent_id: str) -> int:
-    kp = AgentKeypair.load(agent_id=agent_id)
-    kp.save()
+from pathlib import Path
+
+
+def cmd_keygen(agent_id: str, key_dir: Optional[str] = None) -> int:
+    directory = Path(key_dir) if key_dir else None
+    kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
+    kp.save(directory=directory)
     print(display_qr(kp))
     return 0
 
 
-def cmd_register(agent_id: str, server: str, api_key: str) -> int:
+def cmd_register(agent_id: str, server: str, api_key: str, key_dir: Optional[str] = None) -> int:
     if not api_key:
         print("❌ Error: API key required. Provide via --api-key or set AGENTLINK_API_KEY environment variable.", file=sys.stderr)
         return 1
 
-    kp = AgentKeypair.load(agent_id=agent_id)
-    kp.save()
+    directory = Path(key_dir) if key_dir else None
+    kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
+    kp.save(directory=directory)
 
     print(f"📡 Registering agent '{agent_id}' with AgentLink server: {server}")
     client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
@@ -71,8 +80,9 @@ def cmd_register(agent_id: str, server: str, api_key: str) -> int:
         return 1
 
 
-def cmd_status(agent_id: str) -> int:
-    kp = AgentKeypair.load(agent_id=agent_id)
+def cmd_status(agent_id: str, key_dir: Optional[str] = None) -> int:
+    directory = Path(key_dir) if key_dir else None
+    kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
     print(f"Agent ID:       {kp.agent_id}")
     print(f"Signing Pub:    {kp.sign_pub_b64}")
     print(f"Encryption Pub: {kp.enc_pub_b64}")
@@ -80,12 +90,13 @@ def cmd_status(agent_id: str) -> int:
     return 0
 
 
-def cmd_connect(agent_id: str, server: str, api_key: str, once: bool = False) -> int:
-    ret = cmd_register(agent_id, server, api_key)
+def cmd_connect(agent_id: str, server: str, api_key: str, key_dir: Optional[str] = None, once: bool = False) -> int:
+    ret = cmd_register(agent_id, server, api_key, key_dir=key_dir)
     if ret != 0 or once:
         return ret
 
-    kp = AgentKeypair.load(agent_id=agent_id)
+    directory = Path(key_dir) if key_dir else None
+    kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
     client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
 
     print(f"👂 Listening for peer connection requests and messages on {server} (Ctrl+C to stop)...")
@@ -107,13 +118,13 @@ def cmd_connect(agent_id: str, server: str, api_key: str, once: bool = False) ->
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     if args.command == "keygen":
-        return cmd_keygen(args.agent_id)
+        return cmd_keygen(args.agent_id, key_dir=args.key_dir)
     elif args.command == "register":
-        return cmd_register(args.agent_id, args.server, args.api_key)
+        return cmd_register(args.agent_id, args.server, args.api_key, key_dir=args.key_dir)
     elif args.command == "status":
-        return cmd_status(args.agent_id)
+        return cmd_status(args.agent_id, key_dir=args.key_dir)
     elif args.command == "connect":
-        return cmd_connect(args.agent_id, args.server, args.api_key, args.once)
+        return cmd_connect(args.agent_id, args.server, args.api_key, key_dir=args.key_dir, once=args.once)
     return 0
 
 
