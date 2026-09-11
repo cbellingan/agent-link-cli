@@ -91,6 +91,9 @@ def cmd_status(agent_id: str, key_dir: Optional[str] = None) -> int:
 
 
 def cmd_connect(agent_id: str, server: str, api_key: str, key_dir: Optional[str] = None, once: bool = False) -> int:
+    if agent_id == "agent":
+        print("💡 Tip: Connecting as default agent ID 'agent'. To use a custom ID (e.g. 'ted'), use: --agent-id ted\n")
+
     ret = cmd_register(agent_id, server, api_key, key_dir=key_dir)
     if ret != 0 or once:
         return ret
@@ -99,17 +102,33 @@ def cmd_connect(agent_id: str, server: str, api_key: str, key_dir: Optional[str]
     kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
     client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
 
-    print(f"👂 Listening for peer connection requests and messages on {server} (Ctrl+C to stop)...")
+    print(f"\n👂 Listening for peer connection requests and messages on {server} (Ctrl+C to stop)...")
     try:
         while True:
             messages = client.poll_messages(timeout_seconds=10)
             for m in messages:
-                print(f"\n📩 [INCOMING] From: {m.get('senderId', 'peer')} | Link: {m.get('linkId', 'unknown')}")
+                sender_id = m.get('senderId', 'peer')
+                link_id = m.get('linkId', 'unknown')
+                print(f"\n📩 [INCOMING] From: {sender_id} | Link: {link_id}")
                 payload = m.get("payload")
                 if isinstance(payload, str):
-                    print(f"   Message: {payload}")
+                    print(f"   💬 Message: {payload}")
                 elif isinstance(payload, dict):
-                    print(f"   E2EE Ciphertext: {payload.get('data', '')[:32]}...")
+                    sender_enc_pub = m.get("senderEncPub")
+                    if sender_enc_pub and "iv" in payload and "data" in payload:
+                        try:
+                            decrypted_bytes = kp.decrypt(
+                                peer_enc_pub_b64=sender_enc_pub,
+                                iv_b64=payload["iv"],
+                                data_b64=payload["data"],
+                            )
+                            decrypted_text = decrypted_bytes.decode("utf-8")
+                            print(f"   🔓 [DECRYPTED E2EE]: {decrypted_text}")
+                        except Exception as dec_err:
+                            print(f"   ⚠️ Decryption failed: {dec_err}")
+                            print(f"   🔒 E2EE Ciphertext: {payload.get('data', '')[:32]}...")
+                    else:
+                        print(f"   🔒 E2EE Ciphertext: {payload.get('data', '')[:32]}...")
     except KeyboardInterrupt:
         print("\n🛑 Stopped listening.")
         return 0
