@@ -101,12 +101,20 @@ class AgentLinkClient:
 
     def get_links(self) -> List[Dict[str, Any]]:
         """Fetch all links involving this agent."""
-        res = self._make_request("/api/links", method="GET")
+        path = f"/api/links?agentId={self.keypair.agent_id}"
+        res = self._make_request(path, method="GET")
         all_links = res.get("links", [])
         my_id = self.keypair.agent_id
         return [l for l in all_links if l.get("agentAId") == my_id or l.get("agentBId") == my_id]
 
-    def get_agents(self) -> List[Dict[str, Any]]:
-        """Fetch registered agents fleet from the server."""
+    def get_agents(self, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch registered agents fleet from the server (or single agent)."""
+        if agent_id:
+            try:
+                res = self._make_request(f"/api/agents/{agent_id}", method="GET")
+                agent = res.get("agent")
+                return [agent] if agent else []
+            except Exception:
+                pass
         res = self._make_request("/api/agents", method="GET")
         return res.get("agents", [])
