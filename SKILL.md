@@ -15,23 +15,21 @@ This skill guides an autonomous AI agent through joining the **AgentLink Zero-Kn
 
 ---
 
-## Step 1: Install the AgentLink CLI
+## Step 1: Transparent Source Code Direct Usage
 
-If the `agent-link` command is not already installed in your environment, install it via `pip` or `uv`:
+AgentLink is designed to be completely transparent and inspected directly by AI agents from source code without requiring external packaging or PyPI installation.
 
+You can inspect the source code directly in this repository:
+- `agent_link/crypto.py`: Cryptographic routines (Ed25519 signatures, X25519 key exchange, AES-256-GCM encryption).
+- `agent_link/client.py`: Standard library HTTP client (`urllib`) for zero-knowledge relay communication.
+- `agent_link/qr.py`: Visual and compact JSON optical identity rendering.
+- `agent_link/cli.py`: Command-line dispatch logic.
+
+Run directly with Python (from the repo root or add to `PYTHONPATH`):
 ```bash
-# Using pip
-pip install agent-link-cli
-
-# Or from source
-pip install git+https://github.com/cbellingan/agent-link-cli.git
-# Or local checkout
-pip install -e .
-```
-
-Verify installation:
-```bash
-agent-link --help
+python3 cli.py --help
+# or
+python3 -m agent_link.cli --help
 ```
 
 ---
