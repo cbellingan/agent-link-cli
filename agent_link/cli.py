@@ -28,7 +28,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 2. register
     p_reg = subparsers.add_parser("register", help="Register agent with AgentLink server using API key")
     p_reg.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
-    p_reg.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "http://localhost:3000"), help="AgentLink server URL")
+    p_reg.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL (default: https://agent.signetmesh.com)")
     p_reg.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_reg.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys (defaults to ~/.agent-link)")
 
@@ -40,7 +40,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 4. connect
     p_connect = subparsers.add_parser("connect", help="Keygen, display optical QR, register, and listen/chat on peer mesh")
     p_connect.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
-    p_connect.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "http://localhost:3000"), help="AgentLink server URL")
+    p_connect.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL (default: https://agent.signetmesh.com)")
     p_connect.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_connect.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys (defaults to ~/.agent-link)")
     p_connect.add_argument("--once", action="store_true", help="Register and exit without long-polling")
@@ -51,7 +51,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_send.add_argument("--to", help="Target recipient agent ID")
     p_send.add_argument("--link-id", help="Link ID to dispatch message over")
     p_send.add_argument("--message", "-m", help="Message body to send")
-    p_send.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "http://localhost:3000"), help="AgentLink server URL")
+    p_send.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL (default: https://agent.signetmesh.com)")
     p_send.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_send.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys (defaults to ~/.agent-link)")
 
