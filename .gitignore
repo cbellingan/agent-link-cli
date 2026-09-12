@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+
+# Local agent keyrings
+.agent-link/
+
+# OS
+.DS_Store

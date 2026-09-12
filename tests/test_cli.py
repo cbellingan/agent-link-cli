@@ -2,7 +2,10 @@
 
 import io
 import json
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
@@ -43,6 +46,7 @@ class TestCli(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.temp_dir = tempfile.mkdtemp(prefix="agent-link-test-")
         cls.server = HTTPServer(("127.0.0.1", 0), MockServerHandler)
         cls.port = cls.server.server_port
         cls.server_url = f"http://127.0.0.1:{cls.port}"
@@ -52,18 +56,20 @@ class TestCli(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        if os.path.exists(cls.temp_dir):
+            shutil.rmtree(cls.temp_dir, ignore_errors=True)
 
     def test_parse_args(self):
-        args = parse_args(["keygen", "--agent-id", "my-test-agent"])
+        args = parse_args(["keygen", "--agent-id", "my-test-agent", "--key-dir", self.temp_dir])
         self.assertEqual(args.command, "keygen")
         self.assertEqual(args.agent_id, "my-test-agent")
 
     def test_cmd_keygen(self):
-        ret = main(["keygen", "--agent-id", "agent-cli-test"])
+        ret = main(["keygen", "--agent-id", "agent-cli-test", "--key-dir", self.temp_dir])
         self.assertEqual(ret, 0)
 
     def test_cmd_status(self):
-        ret = main(["status", "--agent-id", "agent-cli-test"])
+        ret = main(["status", "--agent-id", "agent-cli-test", "--key-dir", self.temp_dir])
         self.assertEqual(ret, 0)
 
     def test_cmd_register_unauthorized_key(self):
@@ -72,6 +78,7 @@ class TestCli(unittest.TestCase):
             "--agent-id", "agent-cli-test",
             "--server", self.server_url,
             "--api-key", "invalid_key",
+            "--key-dir", self.temp_dir,
         ])
         self.assertEqual(ret, 1)
 
@@ -82,6 +89,7 @@ class TestCli(unittest.TestCase):
             "--agent-id", "agent-cli-test-registered",
             "--server", self.server_url,
             "--api-key", "sec_apk_valid_12345",
+            "--key-dir", self.temp_dir,
         ])
         self.assertEqual(ret, 0)
         self.assertEqual(len(MockServerHandler.registered_agents), 1)
