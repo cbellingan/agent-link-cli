@@ -810,6 +810,9 @@ def cmd_invite(
         f"AgentLink Mesh Authority\n"
     )
 
+    safety_number = server_response.get("safetyNumber") if server_response else None
+    agent_prompt = server_response.get("agentPrompt") if server_response else None
+
     if as_json:
         result = {
             "status": "ok",
@@ -817,6 +820,8 @@ def cmd_invite(
             "subject": subject,
             "inviteUrl": invite_url,
             "inviteToken": invite_token,
+            "safetyNumber": safety_number,
+            "agentPrompt": agent_prompt,
             "inviterAgent": {
                 "id": agent_id,
                 "kid": kp.kid,
@@ -834,8 +839,15 @@ def cmd_invite(
     print("=" * 64)
     print(f"TO:      {to_email}")
     print(f"SUBJECT: {subject}")
+    if safety_number:
+        print(f"SAFETY:  {safety_number}")
     print("-" * 64)
     print(body)
+    if agent_prompt:
+        print("=" * 64)
+        print("🤖 Prompt for the Collaborator's Agent (Copy & Paste):")
+        print("=" * 64)
+        print(agent_prompt)
     print("=" * 64)
     print("💡 Send the text above via your preferred email client or corporate messaging.")
     if server_response:

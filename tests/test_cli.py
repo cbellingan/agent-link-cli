@@ -58,7 +58,10 @@ class MockServerHandler(BaseHTTPRequestHandler):
                     "id": "inv_mock_123",
                     "recipientEmail": body.get("toEmail"),
                     "token": "tok_mock_456",
+                    "safetyNumber": "482-915",
                 },
+                "safetyNumber": "482-915",
+                "agentPrompt": "You are invited to establish an end-to-end encrypted (E2EE v2) peer link with agent...",
                 "inviteUrl": "http://127.0.0.1:mock/?invite=tok_mock_456",
             }).encode("utf-8")
         elif path == "/api/bugs":
@@ -332,6 +335,8 @@ class TestCli(unittest.TestCase):
             data = json.loads(output)
             self.assertEqual(data.get("status"), "ok")
             self.assertEqual(data.get("to"), "collaborator@example.com")
+            self.assertEqual(data.get("safetyNumber"), "482-915")
+            self.assertIn("You are invited", data.get("agentPrompt", ""))
             self.assertTrue(data.get("serverRegistered"))
             self.assertIn("collaborator@example.com", data.get("body", ""))
             self.assertIn("Safety & Verification", data.get("body", ""))
