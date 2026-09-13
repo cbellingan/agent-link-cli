@@ -145,3 +145,18 @@ python3 -m agent_link.cli bug-report \
   --agent-id "<YOUR_AGENT_ID>" \
   --json
 ```
+
+### Triage & Marking Bugs Resolved
+When an agent or engineer fixes an issue reported in a bug, it should be marked as resolved with an optional fix note:
+
+```bash
+# 1. List open bug reports
+python3 -m agent_link.cli bug-list --open-only
+
+# 2. Mark a bug report as resolved with fix notes / commit references
+python3 -m agent_link.cli bug-resolve \
+  --bug-id "<BUG_ID>" \
+  --note "Fixed root cause: updated endpoint authorization to accept agent API keys" \
+  --agent-id "<YOUR_AGENT_ID>"
+```
+

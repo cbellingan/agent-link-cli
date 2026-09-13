@@ -138,6 +138,27 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_bug.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_bug.add_argument("--json", action="store_true", help="Output machine-readable JSON response")
 
+    # 13. bug-list
+    p_bug_list = subparsers.add_parser("bug-list", help="List operational bug reports on AgentLink")
+    p_bug_list.add_argument("--limit", type=int, default=50, help="Max reports to retrieve (default: 50)")
+    p_bug_list.add_argument("--agent-id", default=None, help="Filter reports by agent ID")
+    p_bug_list.add_argument("--open-only", action="store_true", help="Show only unresolved open bugs")
+    p_bug_list.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_bug_list.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="AgentLink API key")
+    p_bug_list.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
+    p_bug_list.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    # 14. bug-resolve
+    p_bug_res = subparsers.add_parser("bug-resolve", help="Mark an operational bug report as resolved (or reopened)")
+    p_bug_res.add_argument("--bug-id", required=True, help="Bug report ID (e.g. bug_1789318804571_49531da3)")
+    p_bug_res.add_argument("--note", help="Optional resolution note or fix commit reference")
+    p_bug_res.add_argument("--reopen", action="store_true", help="Reopen the bug report instead of resolving")
+    p_bug_res.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
+    p_bug_res.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_bug_res.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="AgentLink API key")
+    p_bug_res.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
+    p_bug_res.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
     return parser.parse_args(argv)
 
 
@@ -819,6 +840,95 @@ def cmd_bug_report(
     return 0
 
 
+def cmd_bug_list(
+    limit: int = 50,
+    agent_id: Optional[str] = None,
+    open_only: bool = False,
+    server: str = "https://agent.signetmesh.com",
+    api_key: str = "",
+    key_dir: Optional[str] = None,
+    as_json: bool = False,
+) -> int:
+    """Fetch and display bug reports from the server."""
+    client = AgentLinkClient(server_url=server, api_key=api_key)
+    try:
+        bugs = client.get_bug_reports(limit=limit)
+    except Exception as e:
+        if as_json:
+            print(json.dumps({"error": "fetch_failed", "details": str(e)}))
+            return 1
+        print(f"❌ Error fetching bug reports: {e}", file=sys.stderr)
+        return 1
+
+    if agent_id:
+        bugs = [b for b in bugs if b.get("agentId") == agent_id]
+    if open_only:
+        bugs = [b for b in bugs if not b.get("resolved")]
+
+    if as_json:
+        print(json.dumps({"status": "ok", "count": len(bugs), "bugs": bugs}, indent=2))
+        return 0
+
+    if not bugs:
+        print("No bug reports found.")
+        return 0
+
+    print(f"\n🐛 AgentLink Bug Reports ({len(bugs)} retrieved):")
+    print("=" * 80)
+    for b in bugs:
+        status = "✅ RESOLVED" if b.get("resolved") else "🔴 OPEN"
+        sev = (b.get("severity") or "medium").upper()
+        b_id = b.get("id")
+        agt = b.get("agentId") or "anonymous"
+        title = b.get("title")
+        res_info = f" | Resolved by {b.get('resolvedBy')}" if b.get("resolved") else ""
+        print(f"[{status}] [{sev}] {b_id} (Agent: {agt}){res_info}")
+        print(f"  Title: {title}")
+        if b.get("resolutionNote"):
+            print(f"  Fix Note: {b.get('resolutionNote')}")
+        print("-" * 80)
+    return 0
+
+
+def cmd_bug_resolve(
+    bug_id: str,
+    note: Optional[str] = None,
+    reopen: bool = False,
+    agent_id: str = "agent",
+    server: str = "https://agent.signetmesh.com",
+    api_key: str = "",
+    key_dir: Optional[str] = None,
+    as_json: bool = False,
+) -> int:
+    """Resolve or reopen a bug report."""
+    directory = Path(key_dir) if key_dir else None
+    try:
+        kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
+    except Exception:
+        kp = None
+
+    client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
+    should_resolve = not reopen
+    try:
+        res = client.resolve_bug_report(bug_id=bug_id, resolved=should_resolve, note=note)
+    except Exception as e:
+        if as_json:
+            print(json.dumps({"error": "resolve_failed", "details": str(e)}))
+            return 1
+        print(f"❌ Error updating bug report: {e}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(json.dumps(res, indent=2))
+        return 0
+
+    action = "resolved" if should_resolve else "reopened"
+    print(f"✅ Bug report {bug_id} successfully {action}!")
+    if note:
+        print(f"Fix Note: {note}")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     check_cli_secrets_warning(argv)
     args = parse_args(argv)
@@ -874,6 +984,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             title=args.title,
             details=args.details,
             severity=args.severity,
+            server=args.server,
+            api_key=args.api_key,
+            key_dir=args.key_dir,
+            as_json=args.json,
+        )
+    elif args.command == "bug-list":
+        return cmd_bug_list(
+            limit=args.limit,
+            agent_id=args.agent_id,
+            open_only=args.open_only,
+            server=args.server,
+            api_key=args.api_key,
+            key_dir=args.key_dir,
+            as_json=args.json,
+        )
+    elif args.command == "bug-resolve":
+        return cmd_bug_resolve(
+            bug_id=args.bug_id,
+            note=args.note,
+            reopen=args.reopen,
+            agent_id=args.agent_id,
             server=args.server,
             api_key=args.api_key,
             key_dir=args.key_dir,

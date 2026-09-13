@@ -51,6 +51,17 @@ class MockServerHandler(BaseHTTPRequestHandler):
                 "bugId": "bug_mock_12345",
                 "report": body,
             }).encode("utf-8")
+        elif path.startswith("/api/bugs/") and path.endswith("/resolve"):
+            bug_id = path.split("/")[3]
+            resp = json.dumps({
+                "status": "ok",
+                "bug": {
+                    "id": bug_id,
+                    "resolved": body.get("resolved", True),
+                    "resolvedBy": body.get("resolvedBy", "test-agent"),
+                    "resolutionNote": body.get("note"),
+                }
+            }).encode("utf-8")
         elif path.startswith("/api/links/") and (path.endswith("/send") or path.endswith("/message")):
             resp = json.dumps({"status": "ok", "delivered": True}).encode("utf-8")
         else:
@@ -136,6 +147,29 @@ class MockServerHandler(BaseHTTPRequestHandler):
                 "agents": [
                     {"id": "agent-cli-test", "encPub": TestCli.keypair.enc_pub_b64},
                     {"id": "agent-peer", "encPub": TestCli.peer_kp.enc_pub_b64}
+                ]
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
+        if path.startswith("/api/bugs"):
+            resp = json.dumps({
+                "status": "ok",
+                "count": 1,
+                "bugs": [
+                    {
+                        "id": "bug_mock_12345",
+                        "agentId": "agent-cli-test",
+                        "title": "ECDH curve ratchet negotiation failure",
+                        "details": "Details here",
+                        "severity": "high",
+                        "timestamp": "2026-09-13T10:00:00Z",
+                        "resolved": False,
+                    }
                 ]
             }).encode("utf-8")
             self.send_response(200)
@@ -323,6 +357,49 @@ class TestCli(unittest.TestCase):
         with self.assertRaises(AgentLinkError) as ctx:
             client.submit_bug_report(title="Too large", details=oversized_details)
         self.assertIn("10,240 bytes", str(ctx.exception))
+
+    def test_cmd_bug_list_json(self):
+        saved_stdout = sys.stdout
+        try:
+            sys.stdout = io.StringIO()
+            ret = main([
+                "bug-list",
+                "--server", self.server_url,
+                "--api-key", "sec_apk_valid_12345",
+                "--json",
+            ])
+            self.assertEqual(ret, 0)
+            output = sys.stdout.getvalue()
+            data = json.loads(output)
+            self.assertEqual(data.get("status"), "ok")
+            self.assertGreaterEqual(data.get("count"), 1)
+            self.assertEqual(data["bugs"][0]["id"], "bug_mock_12345")
+        finally:
+            sys.stdout = saved_stdout
+
+    def test_cmd_bug_resolve_json(self):
+        saved_stdout = sys.stdout
+        try:
+            sys.stdout = io.StringIO()
+            ret = main([
+                "bug-resolve",
+                "--bug-id", "bug_mock_12345",
+                "--note", "Fixed socket lifecycle and invite authentication",
+                "--agent-id", "agent-cli-test",
+                "--server", self.server_url,
+                "--api-key", "sec_apk_valid_12345",
+                "--key-dir", self.temp_dir,
+                "--json",
+            ])
+            self.assertEqual(ret, 0)
+            output = sys.stdout.getvalue()
+            data = json.loads(output)
+            self.assertEqual(data.get("status"), "ok")
+            self.assertEqual(data["bug"]["id"], "bug_mock_12345")
+            self.assertTrue(data["bug"]["resolved"])
+            self.assertEqual(data["bug"]["resolutionNote"], "Fixed socket lifecycle and invite authentication")
+        finally:
+            sys.stdout = saved_stdout
 
 
 if __name__ == "__main__":

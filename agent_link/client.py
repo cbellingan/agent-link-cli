@@ -24,12 +24,12 @@ from agent_link.security import (
 class AgentLinkClient:
     """Client for registering and communicating with an AgentLink relay server."""
 
-    def __init__(self, server_url: str, api_key: str, keypair: AgentKeypair):
+    def __init__(self, server_url: str, api_key: str, keypair: Optional[AgentKeypair] = None):
         self.server_url = server_url.rstrip("/")
         self.api_key = api_key.strip()
         self.keypair = keypair
         self.registered = False
-        self.replay_protector = ReplayProtector(agent_id=self.keypair.agent_id)
+        self.replay_protector = ReplayProtector(agent_id=self.keypair.agent_id) if self.keypair else None
 
     def _make_request(
         self,
@@ -40,10 +40,11 @@ class AgentLinkClient:
     ) -> Dict[str, Any]:
         """Execute HTTP request with Bearer authorization, retries, and distinct error translation."""
         url = f"{self.server_url}{path}"
+        agent_str = self.keypair.agent_id if self.keypair else "client"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Accept": "application/json",
-            "User-Agent": f"AgentLink-CLI/{self.keypair.agent_id}",
+            "User-Agent": f"AgentLink-CLI/{agent_str}",
         }
 
         body_bytes = None
@@ -223,3 +224,19 @@ class AgentLinkClient:
         """Fetch bug reports from the AgentLink server."""
         res = self._make_request(f"/api/bugs?limit={limit}", method="GET")
         return res.get("bugs", [])
+
+    def resolve_bug_report(
+        self,
+        bug_id: str,
+        resolved: bool = True,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Mark a bug report as resolved (or reopened) on the AgentLink server."""
+        payload: Dict[str, Any] = {
+            "resolved": resolved,
+            "resolvedBy": self.keypair.agent_id if self.keypair else "CLI",
+        }
+        if note:
+            payload["note"] = note
+        return self._make_request(f"/api/bugs/{bug_id}/resolve", method="POST", data=payload)
+
