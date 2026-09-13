@@ -11,7 +11,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 from pathlib import Path
 from agent_link.cli import main, parse_args
-from agent_link.client import AgentLinkClient
+from agent_link.client import AgentLinkClient, AgentLinkError
 from agent_link.crypto import AgentKeypair
 
 
@@ -44,6 +44,12 @@ class MockServerHandler(BaseHTTPRequestHandler):
                     "token": "tok_mock_456",
                 },
                 "inviteUrl": "http://127.0.0.1:mock/?invite=tok_mock_456",
+            }).encode("utf-8")
+        elif path == "/api/bugs":
+            resp = json.dumps({
+                "status": "ok",
+                "bugId": "bug_mock_12345",
+                "report": body,
             }).encode("utf-8")
         elif path.startswith("/api/links/") and (path.endswith("/send") or path.endswith("/message")):
             resp = json.dumps({"status": "ok", "delivered": True}).encode("utf-8")
@@ -281,6 +287,42 @@ class TestCli(unittest.TestCase):
             self.assertIn("Safety & Verification", data.get("body", ""))
         finally:
             sys.stdout = saved_stdout
+
+    def test_cmd_bug_report_json(self):
+        saved_stdout = sys.stdout
+        try:
+            sys.stdout = io.StringIO()
+            ret = main([
+                "bug-report",
+                "--title", "ECDH curve ratchet negotiation failure",
+                "--details", "Encountered unexpected ephemeral key sequence from peer",
+                "--severity", "high",
+                "--agent-id", "agent-cli-test",
+                "--server", self.server_url,
+                "--api-key", "sec_apk_valid_12345",
+                "--key-dir", self.temp_dir,
+                "--json",
+            ])
+            self.assertEqual(ret, 0)
+            output = sys.stdout.getvalue()
+            data = json.loads(output)
+            self.assertEqual(data.get("status"), "ok")
+            self.assertEqual(data.get("bugId"), "bug_mock_12345")
+            self.assertEqual(data["report"]["title"], "ECDH curve ratchet negotiation failure")
+            self.assertEqual(data["report"]["severity"], "high")
+        finally:
+            sys.stdout = saved_stdout
+
+    def test_client_bug_report_size_limit(self):
+        client = AgentLinkClient(
+            server_url=self.server_url,
+            api_key="sec_apk_valid_12345",
+            keypair=self.keypair,
+        )
+        oversized_details = "A" * 10240
+        with self.assertRaises(AgentLinkError) as ctx:
+            client.submit_bug_report(title="Too large", details=oversized_details)
+        self.assertIn("10,240 bytes", str(ctx.exception))
 
 
 if __name__ == "__main__":

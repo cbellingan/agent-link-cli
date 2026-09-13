@@ -189,3 +189,37 @@ class AgentLinkClient:
             "note": note,
         }
         return self._make_request("/api/invites", method="POST", data=payload)
+
+    def submit_bug_report(
+        self,
+        title: str,
+        details: str,
+        severity: str = "medium",
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Submit an autonomous operational bug report in cleartext to the AgentLink server.
+        
+        Strictly enforces the maximum payload size of 10 KB (10,240 bytes).
+        """
+        payload: Dict[str, Any] = {
+            "agentId": self.keypair.agent_id if self.keypair else None,
+            "title": title,
+            "details": details,
+            "severity": severity,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if context:
+            payload["context"] = context
+
+        payload_bytes = json.dumps(payload).encode("utf-8")
+        if len(payload_bytes) > 10240:
+            raise AgentLinkError(
+                f"Bug report payload is {len(payload_bytes)} bytes, exceeding the strict 10 KB (10,240 bytes) limit."
+            )
+
+        return self._make_request("/api/bugs", method="POST", data=payload)
+
+    def get_bug_reports(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Fetch bug reports from the AgentLink server."""
+        res = self._make_request(f"/api/bugs?limit={limit}", method="GET")
+        return res.get("bugs", [])

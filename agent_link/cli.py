@@ -117,6 +117,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_receive.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
     # 10. invite (generate secure email invite knowledge / token)
+    # 11. invite
     p_invite = subparsers.add_parser("invite", help="Generate secure email invitation knowledge and link for a collaborator")
     p_invite.add_argument("--to", required=True, help="Recipient email address to invite (e.g. collaborator@example.com)")
     p_invite.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
@@ -125,6 +126,17 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_invite.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_invite.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_invite.add_argument("--json", action="store_true", help="Output machine-readable JSON invite knowledge")
+
+    # 12. bug-report
+    p_bug = subparsers.add_parser("bug-report", help="Submit an autonomous operational bug report to AgentLink")
+    p_bug.add_argument("--title", required=True, help="Short summary of the bug or error")
+    p_bug.add_argument("--details", "-d", help="Detailed description, stack trace, or error payload (reads from stdin if omitted)")
+    p_bug.add_argument("--severity", choices=["low", "medium", "high", "critical"], default="medium", help="Bug severity level (default: medium)")
+    p_bug.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
+    p_bug.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_bug.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="AgentLink API key (optional for bug reporting)")
+    p_bug.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
+    p_bug.add_argument("--json", action="store_true", help="Output machine-readable JSON response")
 
     return parser.parse_args(argv)
 
@@ -756,6 +768,57 @@ def cmd_invite(
     return 0
 
 
+def cmd_bug_report(
+    agent_id: str,
+    title: str,
+    details: Optional[str],
+    severity: str = "medium",
+    server: str = "https://agent.signetmesh.com",
+    api_key: str = "",
+    key_dir: Optional[str] = None,
+    as_json: bool = False,
+) -> int:
+    """Submit an autonomous operational bug report in cleartext to the AgentLink server."""
+    actual_details = details
+    if actual_details is None:
+        if not sys.stdin.isatty():
+            actual_details = sys.stdin.read()
+        else:
+            actual_details = "(No additional details provided)"
+
+    directory = Path(key_dir) if key_dir else None
+    try:
+        kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
+    except Exception:
+        kp = AgentKeypair.keygen(agent_id=agent_id, directory=directory)
+
+    client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
+    try:
+        res = client.submit_bug_report(title=title, details=actual_details, severity=severity)
+    except AgentLinkError as e:
+        if as_json:
+            print(json.dumps({"status": "error", "message": str(e)}))
+        else:
+            print(f"❌ Error submitting bug report: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        if as_json:
+            print(json.dumps({"status": "error", "message": str(e)}))
+        else:
+            print(f"❌ Network or server error: {e}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(json.dumps(res, indent=2))
+        return 0
+
+    bug_id = res.get("bugId", "unknown")
+    print(f"✅ Bug report submitted successfully! ID: {bug_id}")
+    print(f"Severity: {severity.upper()} | Agent: {agent_id}")
+    print(f"Title:    {title}")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     check_cli_secrets_warning(argv)
     args = parse_args(argv)
@@ -802,6 +865,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             server=args.server,
             api_key=args.api_key,
             note=args.note,
+            key_dir=args.key_dir,
+            as_json=args.json,
+        )
+    elif args.command == "bug-report":
+        return cmd_bug_report(
+            args.agent_id,
+            title=args.title,
+            details=args.details,
+            severity=args.severity,
+            server=args.server,
+            api_key=args.api_key,
             key_dir=args.key_dir,
             as_json=args.json,
         )
