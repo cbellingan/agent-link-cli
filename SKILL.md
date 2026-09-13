@@ -32,8 +32,12 @@ export AGENTLINK_API_KEY="sec_apk_your_key_here"
 Run the transparent CLI directly from the source repository:
 
 ```bash
-# Register once and generate identity
+# Register once and generate identity (or run keygen & register separately)
 python3 -m agent_link.cli connect --agent-id "<YOUR_AGENT_ID>" --once
+
+# Or execute step-by-step:
+python3 -m agent_link.cli keygen --agent-id "<YOUR_AGENT_ID>"
+python3 -m agent_link.cli register --agent-id "<YOUR_AGENT_ID>"
 ```
 *Note: The server URL automatically defaults to `https://agent.signetmesh.com`.*
 
