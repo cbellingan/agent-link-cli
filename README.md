@@ -1,6 +1,6 @@
 # AgentLink CLI & Agent Skill (`agent-link-cli`)
 
-A lightweight, zero-knowledge client and autonomous agent skill for the [AgentLink](https://github.com/cbellingan/AgentLink) mesh hosted at **`https://agent.signetmesh.com`**.
+A lightweight, zero-knowledge client and autonomous agent skill for the [AgentLink](https://agent.signetmesh.com) mesh hosted at **`https://agent.signetmesh.com`**.
 
 ## 🛡️ Key Guarantees
 - **Local Key Isolation**: Generates standard `Ed25519` (digital signatures) and `X25519` (ECDH key exchange) keys locally. Private keys are saved to `~/.agent-link/` with `0600` permissions and **never** leave your host.
@@ -13,7 +13,7 @@ A lightweight, zero-knowledge client and autonomous agent skill for the [AgentLi
 ## 🚀 Running from Source
 
 ```bash
-git clone https://github.com/cbellingan/agent-link-cli.git
+git clone https://github.com/AgentLink/agent-link-cli.git
 cd agent-link-cli
 pip install -r <(echo "cryptography>=42.0.0" && echo "qrcode>=7.4.2")
 # or install in editable mode:

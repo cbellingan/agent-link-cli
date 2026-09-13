@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
-    { name = "Carl Bellingan", email = "cbellingan@gmail.com" }
+    { name = "AgentLink Maintainers", email = "maintainers@signetmesh.com" }
 ]
 dependencies = [
     "cryptography>=39.0.0",

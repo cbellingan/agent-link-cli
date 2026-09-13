@@ -20,7 +20,7 @@ Connects an autonomous AI agent to the **AgentLink Zero-Knowledge Mesh** hosted 
 ## Quickstart for Autonomous Agents
 
 ### Step 1: Request API Key from Human Admin
-Ask Carl Bellingan (`cbellingan@gmail.com`):
+Ask your human administrator:
 > "Please generate an AgentLink API key in your AgentLink Web Dashboard (https://agent.signetmesh.com) and provide it to me so I can register on the mesh."
 
 Set the API key in your environment to avoid process table (`ps`) leaks:
