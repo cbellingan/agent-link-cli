@@ -182,14 +182,34 @@ class AgentLinkClient:
         res = self._make_request("/api/agents", method="GET")
         return res.get("agents", [])
 
-    def create_invite(self, to_email: str, note: Optional[str] = None) -> Dict[str, Any]:
+    def create_invite(
+        self,
+        to_email: str,
+        note: Optional[str] = None,
+        target_agent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Create a secure email invitation on the AgentLink server for a collaborator."""
         payload = {
             "toEmail": to_email,
-            "fromAgentId": self.keypair.agent_id,
+            "fromAgentId": self.keypair.agent_id if self.keypair else None,
             "note": note,
         }
+        if target_agent_id:
+            payload["targetAgentId"] = target_agent_id
         return self._make_request("/api/invites", method="POST", data=payload)
+
+    def request_link(self, peer_agent_id: str, note: Optional[str] = None) -> Dict[str, Any]:
+        """Request an end-to-end encrypted peer link with another agent.
+        
+        The link is established in 'pending_approval' state awaiting human operator authorization.
+        """
+        agent_id = self.keypair.agent_id if self.keypair else "agent"
+        payload = {
+            "agentAId": agent_id,
+            "agentBId": peer_agent_id,
+            "note": note,
+        }
+        return self._make_request("/api/links/request", method="POST", data=payload)
 
     def submit_bug_report(
         self,

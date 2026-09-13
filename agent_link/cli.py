@@ -76,6 +76,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_links.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_links.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    # 5b. link-request / request-link
+    p_link_req = subparsers.add_parser("link-request", aliases=["request-link"], help="Request an end-to-end encrypted peer link with another agent")
+    p_link_req.add_argument("--peer", "--to", required=True, dest="peer", help="Target peer agent ID to connect with")
+    p_link_req.add_argument("--note", help="Optional note or purpose for the requested link")
+    p_link_req.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
+    p_link_req.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_link_req.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
+    p_link_req.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
+    p_link_req.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
     # 6. revoke
     p_revoke = subparsers.add_parser("revoke", help="Sever / revoke a link")
     p_revoke.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
@@ -121,6 +131,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_invite = subparsers.add_parser("invite", help="Generate secure email invitation knowledge and link for a collaborator")
     p_invite.add_argument("--to", required=True, help="Recipient email address to invite (e.g. collaborator@example.com)")
     p_invite.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
+    p_invite.add_argument("--target-agent", "--peer", dest="target_agent", help="Optional peer agent ID to connect with upon invite acceptance")
     p_invite.add_argument("--note", help="Optional invitation note/context")
     p_invite.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
     p_invite.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
@@ -308,6 +319,48 @@ def cmd_revoke(agent_id: str, server: str, api_key: str, link_id: str, key_dir: 
         return 0
     except Exception as e:
         print(f"❌ Failed to revoke link: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_link_request(
+    agent_id: str,
+    peer: str,
+    server: str,
+    api_key: str,
+    note: Optional[str] = None,
+    key_dir: Optional[str] = None,
+    as_json: bool = False,
+) -> int:
+    """Request an end-to-end encrypted peer link with another agent."""
+    if not api_key:
+        print("❌ Error: API key required. Provide via --api-key or set AGENTLINK_API_KEY environment variable.", file=sys.stderr)
+        return 1
+
+    directory = Path(key_dir) if key_dir else None
+    try:
+        kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
+    except Exception:
+        kp = None
+
+    client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
+    try:
+        res = client.request_link(peer_agent_id=peer, note=note)
+        if as_json:
+            print(json.dumps(res, indent=2))
+        else:
+            link_id = res.get("linkId", res.get("link", {}).get("id", "unknown"))
+            status = res.get("link", {}).get("status", "pending_approval")
+            print(f"✅ Link request submitted successfully!")
+            print(f"Link ID:   {link_id}")
+            print(f"Agents:    {agent_id} ⟷ {peer}")
+            print(f"Status:    {status.upper()}")
+            print(f"Note:      Dual human approval is required before encrypted messages can route.")
+        return 0
+    except Exception as e:
+        if as_json:
+            print(json.dumps({"status": "error", "message": str(e)}))
+        else:
+            print(f"❌ Failed to request link: {e}", file=sys.stderr)
         return 1
 
 
@@ -706,6 +759,7 @@ def cmd_invite(
     server: str,
     api_key: str,
     note: Optional[str] = None,
+    target_agent: Optional[str] = None,
     key_dir: Optional[str] = None,
     as_json: bool = False,
 ) -> int:
@@ -723,7 +777,7 @@ def cmd_invite(
     if api_key:
         try:
             client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
-            server_response = client.create_invite(to_email=to_email, note=note)
+            server_response = client.create_invite(to_email=to_email, note=note, target_agent_id=target_agent)
             invite_url = server_response.get("inviteUrl")
             invite_token = server_response.get("invite", {}).get("token")
         except Exception as e:
@@ -942,6 +996,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_whoami(args.agent_id, args.server, args.api_key, key_dir=args.key_dir, as_json=args.json)
     elif args.command == "links":
         return cmd_links(args.agent_id, args.server, args.api_key, key_dir=args.key_dir, as_json=args.json)
+    elif args.command in ("link-request", "request-link"):
+        return cmd_link_request(
+            agent_id=args.agent_id,
+            peer=args.peer,
+            server=args.server,
+            api_key=args.api_key,
+            note=args.note,
+            key_dir=args.key_dir,
+            as_json=args.json,
+        )
     elif args.command == "revoke":
         return cmd_revoke(args.agent_id, args.server, args.api_key, link_id=args.link_id, key_dir=args.key_dir, as_json=args.json)
     elif args.command == "connect":
@@ -975,6 +1039,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             server=args.server,
             api_key=args.api_key,
             note=args.note,
+            target_agent=getattr(args, "target_agent", None),
             key_dir=args.key_dir,
             as_json=args.json,
         )

@@ -35,7 +35,23 @@ class MockServerHandler(BaseHTTPRequestHandler):
         MockServerHandler.registered_agents.append(body)
 
         path = self.path
-        if path == "/api/invites":
+        if path == "/api/links/request":
+            link_id = f"link_{body.get('agentAId')}_{body.get('agentBId')}"
+            resp = json.dumps({
+                "status": "ok",
+                "link": {
+                    "id": link_id,
+                    "agentAId": body.get("agentAId"),
+                    "agentBId": body.get("agentBId"),
+                    "status": "pending_approval",
+                    "note": body.get("note"),
+                    "approvals": {
+                        "human_1": True,
+                        "human_2": False,
+                    }
+                }
+            }).encode("utf-8")
+        elif path == "/api/invites":
             resp = json.dumps({
                 "status": "ok",
                 "invite": {
@@ -319,6 +335,57 @@ class TestCli(unittest.TestCase):
             self.assertTrue(data.get("serverRegistered"))
             self.assertIn("collaborator@example.com", data.get("body", ""))
             self.assertIn("Safety & Verification", data.get("body", ""))
+        finally:
+            sys.stdout = saved_stdout
+
+    def test_cmd_invite_with_target_agent_json(self):
+        saved_stdout = sys.stdout
+        try:
+            sys.stdout = io.StringIO()
+            ret = main([
+                "invite",
+                "--to", "collaborator@example.com",
+                "--target-agent", "agent-peer",
+                "--agent-id", "agent-cli-test",
+                "--server", self.server_url,
+                "--api-key", "sec_apk_valid_12345",
+                "--key-dir", self.temp_dir,
+                "--json",
+            ])
+            self.assertEqual(ret, 0)
+            output = sys.stdout.getvalue()
+            data = json.loads(output)
+            self.assertEqual(data.get("status"), "ok")
+            self.assertEqual(data.get("to"), "collaborator@example.com")
+            self.assertTrue(data.get("serverRegistered"))
+            # Confirm MockServerHandler received targetAgentId
+            last_req = MockServerHandler.registered_agents[-1]
+            self.assertEqual(last_req.get("targetAgentId"), "agent-peer")
+        finally:
+            sys.stdout = saved_stdout
+
+    def test_cmd_link_request_json(self):
+        saved_stdout = sys.stdout
+        try:
+            sys.stdout = io.StringIO()
+            ret = main([
+                "link-request",
+                "--peer", "agent-peer",
+                "--note", "Let's connect our agents securely",
+                "--agent-id", "agent-cli-test",
+                "--server", self.server_url,
+                "--api-key", "sec_apk_valid_12345",
+                "--key-dir", self.temp_dir,
+                "--json",
+            ])
+            self.assertEqual(ret, 0)
+            output = sys.stdout.getvalue()
+            data = json.loads(output)
+            self.assertEqual(data.get("status"), "ok")
+            self.assertEqual(data["link"]["status"], "pending_approval")
+            self.assertEqual(data["link"]["agentAId"], "agent-cli-test")
+            self.assertEqual(data["link"]["agentBId"], "agent-peer")
+            self.assertEqual(data["link"]["note"], "Let's connect our agents securely")
         finally:
             sys.stdout = saved_stdout
 

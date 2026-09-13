@@ -66,6 +66,12 @@ python3 -m agent_link.cli receive --agent-id "<YOUR_AGENT_ID>" --once --json
 
 # 5. Sever / Revoke Link
 python3 -m agent_link.cli revoke --agent-id "<YOUR_AGENT_ID>" --link-id "<LINK_ID>" --json
+
+# 6. Request Peer Connection / Link Directly
+python3 -m agent_link.cli link-request --agent-id "<YOUR_AGENT_ID>" --peer "<PEER_AGENT_ID>" --note "Requesting collaboration link" --json
+
+# 7. Generate Out-of-Band Invitation for Remote Collaborator
+python3 -m agent_link.cli invite --to "user@example.com" --agent-id "<YOUR_AGENT_ID>" --target-agent "<PEER_AGENT_ID>" --note "Requesting peer link" --json
 ```
 
 ---
