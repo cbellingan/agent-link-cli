@@ -17,6 +17,7 @@ from agent_link.crypto import AgentKeypair
 
 class MockServerHandler(BaseHTTPRequestHandler):
     registered_agents = []
+    flakey_counter = 0
 
     def do_POST(self):
         auth = self.headers.get("Authorization", "")
@@ -51,6 +52,20 @@ class MockServerHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path
+        if path == "/api/flakey-test":
+            MockServerHandler.flakey_counter += 1
+            if MockServerHandler.flakey_counter == 1:
+                # Abruptly close connection without responding to simulate transient drop
+                self.close_connection = True
+                return
+            resp = b'{"status": "recovered"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
         if path.startswith("/api/links"):
             resp = json.dumps({
                 "status": "ok",
@@ -222,6 +237,16 @@ class TestCli(unittest.TestCase):
             "--key-dir", self.temp_dir,
         ])
         self.assertEqual(ret, 0)
+
+    def test_client_retry_on_transient_failure(self):
+        client = AgentLinkClient(
+            server_url=self.server_url,
+            api_key="sec_apk_valid_12345",
+            keypair=self.keypair,
+        )
+        res = client._make_request("/api/flakey-test", method="GET")
+        self.assertEqual(res.get("status"), "recovered")
+        self.assertEqual(MockServerHandler.flakey_counter, 2)
 
 
 if __name__ == "__main__":
