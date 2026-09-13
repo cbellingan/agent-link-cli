@@ -35,7 +35,17 @@ class MockServerHandler(BaseHTTPRequestHandler):
         MockServerHandler.registered_agents.append(body)
 
         path = self.path
-        if path.startswith("/api/links/") and (path.endswith("/send") or path.endswith("/message")):
+        if path == "/api/invites":
+            resp = json.dumps({
+                "status": "ok",
+                "invite": {
+                    "id": "inv_mock_123",
+                    "recipientEmail": body.get("toEmail"),
+                    "token": "tok_mock_456",
+                },
+                "inviteUrl": "http://127.0.0.1:mock/?invite=tok_mock_456",
+            }).encode("utf-8")
+        elif path.startswith("/api/links/") and (path.endswith("/send") or path.endswith("/message")):
             resp = json.dumps({"status": "ok", "delivered": True}).encode("utf-8")
         else:
             resp = json.dumps({
@@ -247,6 +257,30 @@ class TestCli(unittest.TestCase):
         res = client._make_request("/api/flakey-test", method="GET")
         self.assertEqual(res.get("status"), "recovered")
         self.assertEqual(MockServerHandler.flakey_counter, 2)
+
+    def test_cmd_invite_json(self):
+        saved_stdout = sys.stdout
+        try:
+            sys.stdout = io.StringIO()
+            ret = main([
+                "invite",
+                "--to", "collaborator@example.com",
+                "--agent-id", "agent-cli-test",
+                "--server", self.server_url,
+                "--api-key", "sec_apk_valid_12345",
+                "--key-dir", self.temp_dir,
+                "--json",
+            ])
+            self.assertEqual(ret, 0)
+            output = sys.stdout.getvalue()
+            data = json.loads(output)
+            self.assertEqual(data.get("status"), "ok")
+            self.assertEqual(data.get("to"), "collaborator@example.com")
+            self.assertTrue(data.get("serverRegistered"))
+            self.assertIn("collaborator@example.com", data.get("body", ""))
+            self.assertIn("Safety & Verification", data.get("body", ""))
+        finally:
+            sys.stdout = saved_stdout
 
 
 if __name__ == "__main__":

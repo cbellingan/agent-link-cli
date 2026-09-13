@@ -116,6 +116,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_receive.add_argument("--timeout", type=int, default=5, help="Poll timeout in seconds")
     p_receive.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    # 10. invite (generate secure email invite knowledge / token)
+    p_invite = subparsers.add_parser("invite", help="Generate secure email invitation knowledge and link for a collaborator")
+    p_invite.add_argument("--to", required=True, help="Recipient email address to invite (e.g. collaborator@example.com)")
+    p_invite.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
+    p_invite.add_argument("--note", help="Optional invitation note/context")
+    p_invite.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_invite.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
+    p_invite.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
+    p_invite.add_argument("--json", action="store_true", help="Output machine-readable JSON invite knowledge")
+
     return parser.parse_args(argv)
 
 
@@ -657,6 +667,95 @@ def cmd_connect(
         return 0
 
 
+def cmd_invite(
+    agent_id: str,
+    to_email: str,
+    server: str,
+    api_key: str,
+    note: Optional[str] = None,
+    key_dir: Optional[str] = None,
+    as_json: bool = False,
+) -> int:
+    """Generate secure email invitation knowledge and instructions for peer human/agent."""
+    directory = Path(key_dir) if key_dir else None
+    try:
+        kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
+    except Exception:
+        kp = AgentKeypair.keygen(agent_id=agent_id, directory=directory)
+
+    invite_token = None
+    invite_url = None
+    server_response = None
+
+    if api_key:
+        try:
+            client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
+            server_response = client.create_invite(to_email=to_email, note=note)
+            invite_url = server_response.get("inviteUrl")
+            invite_token = server_response.get("invite", {}).get("token")
+        except Exception as e:
+            if as_json:
+                print(json.dumps({"error": "server_invite_failed", "details": str(e)}))
+                return 1
+            print(f"ℹ️  Server note: Could not reach invite API ({e}). Generating offline template.", file=sys.stderr)
+
+    if not invite_url:
+        invite_url = f"{server.rstrip('/')}/?invite=tok_manual_{to_email}"
+
+    subject = f"AgentLink Invitation: Secure Agent Link Request from {agent_id}"
+    body = (
+        f"Hello,\n\n"
+        f"You have been invited to establish an end-to-end encrypted link with autonomous agent '{agent_id}' on the AgentLink Zero-Knowledge Mesh.\n\n"
+        f"📬 1. Accept Invitation & Access Web Dashboard:\n"
+        f"   {invite_url}\n"
+        f"   (Sign in with your Google account: {to_email})\n\n"
+        f"🔑 2. Inviting Agent Public Identity:\n"
+        f"   Agent ID:    {agent_id}\n"
+        f"   Key ID:      {kp.kid}\n"
+        f"   Sign Pub:    {kp.sign_pub_b64}\n"
+        f"   Enc Pub:     {kp.enc_pub_b64}\n\n"
+        f"🛡️ 3. Safety & Verification Instructions for Your Agent:\n"
+        f"   - Install agent-link-cli: pip install agent-link\n"
+        f"   - Generate local identity: python3 -m agent_link.cli keygen --agent-id <YOUR_AGENT_ID>\n"
+        f"   - Register with your API key: python3 -m agent_link.cli register --agent-id <YOUR_AGENT_ID>\n"
+        f"   - Dual-Approval Gate: Traffic is held in pending state until BOTH you and the inviter approve the link in your dashboards.\n\n"
+        f"Stay secure,\n"
+        f"AgentLink Mesh Authority\n"
+    )
+
+    if as_json:
+        result = {
+            "status": "ok",
+            "to": to_email,
+            "subject": subject,
+            "inviteUrl": invite_url,
+            "inviteToken": invite_token,
+            "inviterAgent": {
+                "id": agent_id,
+                "kid": kp.kid,
+                "signPub": kp.sign_pub_b64,
+                "encPub": kp.enc_pub_b64,
+            },
+            "body": body,
+            "serverRegistered": bool(server_response),
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+
+    print("=" * 64)
+    print("✉️  AgentLink Secure Email Invitation Knowledge Template")
+    print("=" * 64)
+    print(f"TO:      {to_email}")
+    print(f"SUBJECT: {subject}")
+    print("-" * 64)
+    print(body)
+    print("=" * 64)
+    print("💡 Send the text above via your preferred email client or corporate messaging.")
+    if server_response:
+        print("✅ The recipient email is registered and admitted past the login gatekeeper.")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     check_cli_secrets_warning(argv)
     args = parse_args(argv)
@@ -694,6 +793,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             key_dir=args.key_dir,
             once=args.once,
             timeout=args.timeout,
+            as_json=args.json,
+        )
+    elif args.command == "invite":
+        return cmd_invite(
+            args.agent_id,
+            to_email=args.to,
+            server=args.server,
+            api_key=args.api_key,
+            note=args.note,
+            key_dir=args.key_dir,
             as_json=args.json,
         )
     return 0

@@ -180,3 +180,12 @@ class AgentLinkClient:
                 pass
         res = self._make_request("/api/agents", method="GET")
         return res.get("agents", [])
+
+    def create_invite(self, to_email: str, note: Optional[str] = None) -> Dict[str, Any]:
+        """Create a secure email invitation on the AgentLink server for a collaborator."""
+        payload = {
+            "toEmail": to_email,
+            "fromAgentId": self.keypair.agent_id,
+            "note": note,
+        }
+        return self._make_request("/api/invites", method="POST", data=payload)
