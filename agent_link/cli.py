@@ -272,7 +272,7 @@ def cmd_send(agent_id: str, server: str, api_key: str, message: Optional[str] = 
 
     # Look up peer public encryption key if peer ID is known
     if target_peer_id:
-        agents = client.get_agents()
+        agents = client.get_agents(target_peer_id)
         peer_agent = next((a for a in agents if a.get("id") == target_peer_id), None)
         if peer_agent and peer_agent.get("encPub"):
             peer_enc_pub = peer_agent.get("encPub")

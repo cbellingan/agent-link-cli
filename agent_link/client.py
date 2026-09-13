@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import json
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
@@ -41,20 +42,25 @@ class AgentLinkClient:
 
         req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
 
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                resp_data = resp.read().decode("utf-8")
-                return json.loads(resp_data) if resp_data else {}
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8")
+        max_attempts = 3 if method.upper() == "GET" else 1
+        for attempt in range(max_attempts):
             try:
-                err_json = json.loads(err_body)
-                msg = err_json.get("message") or err_json.get("error") or str(e)
-            except Exception:
-                msg = err_body or str(e)
-            raise RuntimeError(f"HTTP {e.code}: {msg}") from e
-        except Exception as e:
-            raise RuntimeError(f"AgentLink network error: {e}") from e
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    resp_data = resp.read().decode("utf-8")
+                    return json.loads(resp_data) if resp_data else {}
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8")
+                try:
+                    err_json = json.loads(err_body)
+                    msg = err_json.get("message") or err_json.get("error") or str(e)
+                except Exception:
+                    msg = err_body or str(e)
+                raise RuntimeError(f"HTTP {e.code}: {msg}") from e
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"AgentLink network error: {e}") from e
 
     def register(self) -> Dict[str, Any]:
         """Register agent with the server using the human-provisioned API key."""
