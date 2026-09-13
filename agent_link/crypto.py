@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import stat
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -17,6 +18,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+from agent_link.security import AgentLinkSecurityError
 
 
 class AgentKeypair:
@@ -85,38 +88,147 @@ class AgentKeypair:
         except Exception:
             return False
 
-    def derive_shared_secret(self, peer_enc_pub_b64: str) -> bytes:
-        """Derive 256-bit AES symmetric key using X25519 ECDH and HKDF-SHA256."""
+    def derive_shared_secret(self, peer_enc_pub_b64: str, link_id: Optional[str] = None) -> bytes:
+        """Derive 256-bit AES symmetric key using X25519 ECDH and HKDF-SHA256.
+        When link_id is provided, keys are salted and bound to that specific link.
+        """
         peer_pub_bytes = base64.b64decode(peer_enc_pub_b64)
         peer_pub = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
         shared_key = self._x25519_priv.exchange(peer_pub)
 
+        if link_id:
+            salt = hashlib.sha256(link_id.encode("utf-8")).digest()
+            info = f"AgentLink-v2-E2EE:{link_id}".encode("utf-8")
+        else:
+            salt = b"AgentLink-E2EE-v1"
+            info = b"agent-mesh-link-keys"
+
         derived_key = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"AgentLink-E2EE-v1",
-            info=b"agent-mesh-link-keys",
+            salt=salt,
+            info=info,
         ).derive(shared_key)
         return derived_key
 
-    def encrypt(self, peer_enc_pub_b64: str, plaintext: bytes) -> Dict[str, str]:
-        """Encrypt message to peer using AES-256-GCM."""
-        aes_key = self.derive_shared_secret(peer_enc_pub_b64)
+    def encrypt(
+        self,
+        peer_enc_pub_b64: str,
+        plaintext: bytes,
+        aad: Optional[bytes] = None,
+        link_id: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Encrypt message to peer using AES-256-GCM with optional AAD and link context."""
+        aes_key = self.derive_shared_secret(peer_enc_pub_b64, link_id=link_id)
         aesgcm = AESGCM(aes_key)
         iv = os.urandom(12)
-        ciphertext = aesgcm.encrypt(iv, plaintext, None)
+        ciphertext = aesgcm.encrypt(iv, plaintext, aad)
         return {
             "iv": base64.b64encode(iv).decode("ascii"),
             "data": base64.b64encode(ciphertext).decode("ascii"),
         }
 
-    def decrypt(self, peer_enc_pub_b64: str, iv_b64: str, data_b64: str) -> bytes:
-        """Decrypt AES-256-GCM message from peer."""
-        aes_key = self.derive_shared_secret(peer_enc_pub_b64)
+    def decrypt(
+        self,
+        peer_enc_pub_b64: str,
+        iv_b64: str,
+        data_b64: str,
+        aad: Optional[bytes] = None,
+        link_id: Optional[str] = None,
+    ) -> bytes:
+        """Decrypt AES-256-GCM message from peer with optional AAD and link context."""
+        aes_key = self.derive_shared_secret(peer_enc_pub_b64, link_id=link_id)
         aesgcm = AESGCM(aes_key)
         iv = base64.b64decode(iv_b64)
         ciphertext = base64.b64decode(data_b64)
-        return aesgcm.decrypt(iv, ciphertext, None)
+        return aesgcm.decrypt(iv, ciphertext, aad)
+
+    def create_envelope(
+        self,
+        link_id: str,
+        recipient_id: str,
+        peer_enc_pub_b64: str,
+        plaintext: str,
+        seq: int,
+    ) -> Dict[str, Any]:
+        """Create signed and encrypted v2 envelope bound to link_id, seq, and recipient."""
+        nonce = os.urandom(16).hex()
+        timestamp = int(time.time())
+        aad = f"v2:{link_id}:{self.agent_id}:{recipient_id}:{seq}:{nonce}".encode("utf-8")
+        enc_result = self.encrypt(
+            peer_enc_pub_b64=peer_enc_pub_b64,
+            plaintext=plaintext.encode("utf-8"),
+            aad=aad,
+            link_id=link_id,
+        )
+        iv_b64 = enc_result["iv"]
+        data_b64 = enc_result["data"]
+        canonical_str = f"v2:{link_id}:{self.agent_id}:{recipient_id}:{seq}:{timestamp}:{nonce}:{iv_b64}:{data_b64}"
+        sig = self.sign(canonical_str.encode("utf-8"))
+
+        return {
+            "v": 2,
+            "linkId": link_id,
+            "senderId": self.agent_id,
+            "recipientId": recipient_id,
+            "seq": seq,
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "iv": iv_b64,
+            "data": data_b64,
+            "sig": sig,
+        }
+
+    def open_envelope(
+        self,
+        link_id: str,
+        peer_sign_pub_b64: str,
+        peer_enc_pub_b64: str,
+        envelope: Dict[str, Any],
+    ) -> str:
+        """Verify signature, context binding, and decrypt envelope."""
+        v = envelope.get("v")
+        if v == 2:
+            sender_id = envelope.get("senderId", "")
+            recipient_id = envelope.get("recipientId", "")
+            seq = envelope.get("seq", 0)
+            timestamp = envelope.get("timestamp", 0)
+            nonce = envelope.get("nonce", "")
+            iv_b64 = envelope.get("iv", "")
+            data_b64 = envelope.get("data", "")
+            sig = envelope.get("sig", "")
+
+            # 1. Verify Ed25519 signature
+            canonical_str = f"v2:{link_id}:{sender_id}:{recipient_id}:{seq}:{timestamp}:{nonce}:{iv_b64}:{data_b64}"
+            if not self.verify_signature(peer_sign_pub_b64, canonical_str.encode("utf-8"), sig):
+                raise AgentLinkSecurityError(
+                    f"Signature verification failed for message from '{sender_id}' on link '{link_id}'"
+                )
+
+            # 2. Decrypt with bound AAD and per-link key
+            aad = f"v2:{link_id}:{sender_id}:{recipient_id}:{seq}:{nonce}".encode("utf-8")
+            try:
+                decrypted_bytes = self.decrypt(
+                    peer_enc_pub_b64=peer_enc_pub_b64,
+                    iv_b64=iv_b64,
+                    data_b64=data_b64,
+                    aad=aad,
+                    link_id=link_id,
+                )
+                return decrypted_bytes.decode("utf-8")
+            except Exception as e:
+                raise AgentLinkSecurityError(f"Decryption / context authentication failed: {e}") from e
+
+        # Fallback to legacy v1 envelope
+        if "iv" in envelope and "data" in envelope:
+            decrypted_bytes = self.decrypt(
+                peer_enc_pub_b64=peer_enc_pub_b64,
+                iv_b64=envelope["iv"],
+                data_b64=envelope["data"],
+            )
+            return decrypted_bytes.decode("utf-8")
+
+        raise AgentLinkSecurityError("Unrecognized envelope format")
 
     def save(self, directory: Optional[Path] = None) -> Path:
         """Save keypair to disk with 0600 file permissions."""
@@ -151,14 +263,15 @@ class AgentKeypair:
 
     @classmethod
     def load(cls, agent_id: str, directory: Optional[Path] = None) -> AgentKeypair:
-        """Load keypair from disk or generate new if missing."""
+        """Load existing keypair from disk. Raises FileNotFoundError if missing (typo protection)."""
         dir_path = directory or (Path.home() / ".agent-link")
         key_file = dir_path / f"{agent_id}.json"
 
         if not key_file.exists():
-            kp = cls(agent_id=agent_id)
-            kp.save(dir_path)
-            return kp
+            raise FileNotFoundError(
+                f"Agent identity '{agent_id}' does not exist in {dir_path}. "
+                f"Run 'python3 -m agent_link.cli keygen --agent-id {agent_id}' to create it."
+            )
 
         data = json.loads(key_file.read_text())
         ed_bytes = base64.b64decode(data["ed25519_priv_b64"])
@@ -166,3 +279,14 @@ class AgentKeypair:
         ed_priv = ed25519.Ed25519PrivateKey.from_private_bytes(ed_bytes)
         x_priv = x25519.X25519PrivateKey.from_private_bytes(x_bytes)
         return cls(ed25519_priv=ed_priv, x25519_priv=x_priv, agent_id=agent_id)
+
+    @classmethod
+    def keygen(cls, agent_id: str, directory: Optional[Path] = None, overwrite: bool = False) -> AgentKeypair:
+        """Explicitly generate and persist a new agent identity."""
+        dir_path = directory or (Path.home() / ".agent-link")
+        key_file = dir_path / f"{agent_id}.json"
+        if key_file.exists() and not overwrite:
+            return cls.load(agent_id, directory=dir_path)
+        kp = cls(agent_id=agent_id)
+        kp.save(dir_path)
+        return kp

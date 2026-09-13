@@ -9,6 +9,16 @@ from typing import Any, Dict, List, Optional
 
 from agent_link.crypto import AgentKeypair
 from agent_link.qr import create_qr_payload
+from agent_link.security import (
+    AgentLinkError,
+    AgentLinkSecurityError,
+    AgentLinkAuthError,
+    AgentLinkNotFoundError,
+    AgentLinkNetworkError,
+    AgentLinkTimeoutError,
+    AgentLinkTruncatedResponseError,
+    ReplayProtector,
+)
 
 
 class AgentLinkClient:
@@ -19,6 +29,7 @@ class AgentLinkClient:
         self.api_key = api_key.strip()
         self.keypair = keypair
         self.registered = False
+        self.replay_protector = ReplayProtector(agent_id=self.keypair.agent_id)
 
     def _make_request(
         self,
@@ -27,7 +38,7 @@ class AgentLinkClient:
         data: Optional[Dict[str, Any]] = None,
         timeout: int = 20,
     ) -> Dict[str, Any]:
-        """Execute HTTP request with Bearer authorization and error translation."""
+        """Execute HTTP request with Bearer authorization, retries, and distinct error translation."""
         url = f"{self.server_url}{path}"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -55,12 +66,32 @@ class AgentLinkClient:
                     msg = err_json.get("message") or err_json.get("error") or str(e)
                 except Exception:
                     msg = err_body or str(e)
-                raise RuntimeError(f"HTTP {e.code}: {msg}") from e
+
+                if e.code in (401, 403):
+                    raise AgentLinkAuthError(f"HTTP {e.code}: {msg}") from e
+                elif e.code == 404:
+                    raise AgentLinkNotFoundError(f"HTTP 404: {msg}") from e
+                raise AgentLinkError(f"HTTP {e.code}: {msg}") from e
             except Exception as e:
-                if attempt < max_attempts - 1:
+                err_str = str(e).lower()
+                is_timeout = "timeout" in err_str or "timed out" in err_str
+                is_incomplete = (
+                    "incompleteread" in err_str
+                    or "truncat" in err_str
+                    or "connection reset" in err_str
+                    or "remotedisconnected" in err_str
+                    or "remote end closed" in err_str
+                )
+
+                if attempt < max_attempts - 1 and (is_timeout or is_incomplete):
                     time.sleep(0.5 * (attempt + 1))
                     continue
-                raise RuntimeError(f"AgentLink network error: {e}") from e
+
+                if is_timeout:
+                    raise AgentLinkTimeoutError(f"Connection/read timed out reaching {path}: {e}") from e
+                elif is_incomplete:
+                    raise AgentLinkTruncatedResponseError(f"Premature stream termination or truncated read: {e}") from e
+                raise AgentLinkNetworkError(f"AgentLink network error: {e}") from e
 
     def register(self) -> Dict[str, Any]:
         """Register agent with the server using the human-provisioned API key."""
@@ -83,27 +114,52 @@ class AgentLinkClient:
         try:
             res = self._make_request(path, method="GET", timeout=timeout_seconds + 5)
             return res.get("messages", [])
-        except RuntimeError as e:
+        except AgentLinkTimeoutError:
+            return []
+        except Exception as e:
             if "timed out" in str(e).lower() or "504" in str(e):
                 return []
             raise
 
-    def send_encrypted(self, link_id: str, peer_enc_pub_b64: str, plaintext: str) -> Dict[str, Any]:
-        """Encrypt and dispatch payload over an active link."""
-        ciphertext_dict = self.keypair.encrypt(peer_enc_pub_b64, plaintext.encode("utf-8"))
+    def send_encrypted(
+        self,
+        link_id: str,
+        peer_enc_pub_b64: str,
+        plaintext: str,
+        recipient_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Encrypt and dispatch signed v2 envelope over an active link."""
+        target_recipient = recipient_id or "peer"
+        seq = self.replay_protector.next_outbound_seq(link_id)
+        envelope = self.keypair.create_envelope(
+            link_id=link_id,
+            recipient_id=target_recipient,
+            peer_enc_pub_b64=peer_enc_pub_b64,
+            plaintext=plaintext,
+            seq=seq,
+        )
         data = {
             "senderId": self.keypair.agent_id,
-            "payload": ciphertext_dict,
+            "payload": envelope,
         }
         return self._make_request(f"/api/links/{link_id}/send", method="POST", data=data)
 
-    def send_message(self, link_id: str, text: str) -> Dict[str, Any]:
-        """Send message via the link message endpoint."""
+    def send_message(self, link_id: str, text: str, allow_plaintext: bool = False) -> Dict[str, Any]:
+        """Send message via the link message endpoint. Fail-closed unless explicitly allowed."""
+        if not allow_plaintext:
+            raise AgentLinkSecurityError(
+                "Refusing to send unencrypted plaintext over link. "
+                "Pass 'allow_plaintext=True' or '--plaintext' if you explicitly wish to transmit in the clear."
+            )
         data = {
             "senderId": self.keypair.agent_id,
             "payload": text,
         }
         return self._make_request(f"/api/links/{link_id}/message", method="POST", data=data)
+
+    def revoke_link(self, link_id: str) -> Dict[str, Any]:
+        """Sever/revoke an active or pending link."""
+        return self._make_request(f"/api/links/{link_id}", method="DELETE")
 
     def get_links(self) -> List[Dict[str, Any]]:
         """Fetch all links involving this agent."""
