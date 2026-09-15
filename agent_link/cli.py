@@ -525,19 +525,11 @@ def cmd_receive(
                         err_note = f"Security verification rejected: {sec_err}"
                         decrypted_text = f"[REJECTED: {sec_err}]"
 
-                elif "iv" in payload and "data" in payload and sender_enc_pub:
-                    # Legacy v1 fallback
+                elif "iv" in payload and "data" in payload:
+                    # Legacy v1 unauthenticated envelope rejected (fail-closed against downgrade)
                     is_encrypted = True
-                    try:
-                        decrypted_text = kp.open_envelope(
-                            link_id=link_id,
-                            peer_sign_pub_b64="",
-                            peer_enc_pub_b64=sender_enc_pub,
-                            envelope=payload,
-                        )
-                    except Exception as dec_err:
-                        err_note = f"Decryption failed: {dec_err}"
-                        decrypted_text = f"[DECRYPTION FAILED: {dec_err}]"
+                    err_note = "Legacy unauthenticated v1 envelope rejected (v2 required)"
+                    decrypted_text = "[REJECTED: Legacy unauthenticated v1 envelope rejected. Protocol v2 with Ed25519 signature is strictly required]"
             elif isinstance(payload, str):
                 decrypted_text = payload
 
@@ -725,17 +717,10 @@ def cmd_connect(
                             )
                         except Exception as sec_err:
                             decrypted_text = f"[SECURITY REJECTION: {sec_err}]"
-                    elif "iv" in payload and "data" in payload and sender_enc:
+                    elif "iv" in payload and "data" in payload:
+                        # Legacy v1 unauthenticated envelope rejected (fail-closed against downgrade)
                         is_e2ee = True
-                        try:
-                            decrypted_text = kp.open_envelope(
-                                link_id=link_id,
-                                peer_sign_pub_b64="",
-                                peer_enc_pub_b64=sender_enc,
-                                envelope=payload,
-                            )
-                        except Exception as dec_err:
-                            decrypted_text = f"[DECRYPTION FAILED: {dec_err}]"
+                        decrypted_text = "[SECURITY REJECTION: Legacy unauthenticated v1 envelope rejected. Protocol v2 with Ed25519 signature is strictly required]"
                 elif isinstance(payload, str):
                     decrypted_text = payload
 

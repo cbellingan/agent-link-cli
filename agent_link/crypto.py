@@ -100,8 +100,8 @@ class AgentKeypair:
             salt = hashlib.sha256(link_id.encode("utf-8")).digest()
             info = f"AgentLink-v2-E2EE:{link_id}".encode("utf-8")
         else:
-            salt = b"AgentLink-E2EE-v1"
-            info = b"agent-mesh-link-keys"
+            salt = hashlib.sha256(b"AgentLink-v2-default").digest()
+            info = b"AgentLink-v2-E2EE:default"
 
         derived_key = HKDF(
             algorithm=hashes.SHA256(),
@@ -186,49 +186,49 @@ class AgentKeypair:
         peer_enc_pub_b64: str,
         envelope: Dict[str, Any],
     ) -> str:
-        """Verify signature, context binding, and decrypt envelope."""
+        """Verify Ed25519 signature, context binding, and decrypt AES-256-GCM envelope.
+        
+        Strictly enforces protocol v2: rejects unauthenticated legacy envelopes,
+        missing signatures, or tampered context bindings (fail-closed).
+        """
         v = envelope.get("v")
-        if v == 2:
-            sender_id = envelope.get("senderId", "")
-            recipient_id = envelope.get("recipientId", "")
-            seq = envelope.get("seq", 0)
-            timestamp = envelope.get("timestamp", 0)
-            nonce = envelope.get("nonce", "")
-            iv_b64 = envelope.get("iv", "")
-            data_b64 = envelope.get("data", "")
-            sig = envelope.get("sig", "")
+        if v != 2:
+            raise AgentLinkSecurityError(
+                f"Rejecting unauthenticated envelope (v={v}): v2 with mandatory Ed25519 signature and context binding is strictly required"
+            )
 
-            # 1. Verify Ed25519 signature
-            canonical_str = f"v2:{link_id}:{sender_id}:{recipient_id}:{seq}:{timestamp}:{nonce}:{iv_b64}:{data_b64}"
-            if not self.verify_signature(peer_sign_pub_b64, canonical_str.encode("utf-8"), sig):
-                raise AgentLinkSecurityError(
-                    f"Signature verification failed for message from '{sender_id}' on link '{link_id}'"
-                )
+        sender_id = envelope.get("senderId", "")
+        recipient_id = envelope.get("recipientId", "")
+        seq = envelope.get("seq", 0)
+        timestamp = envelope.get("timestamp", 0)
+        nonce = envelope.get("nonce", "")
+        iv_b64 = envelope.get("iv", "")
+        data_b64 = envelope.get("data", "")
+        sig = envelope.get("sig", "")
 
-            # 2. Decrypt with bound AAD and per-link key
-            aad = f"v2:{link_id}:{sender_id}:{recipient_id}:{seq}:{nonce}".encode("utf-8")
-            try:
-                decrypted_bytes = self.decrypt(
-                    peer_enc_pub_b64=peer_enc_pub_b64,
-                    iv_b64=iv_b64,
-                    data_b64=data_b64,
-                    aad=aad,
-                    link_id=link_id,
-                )
-                return decrypted_bytes.decode("utf-8")
-            except Exception as e:
-                raise AgentLinkSecurityError(f"Decryption / context authentication failed: {e}") from e
+        if not sig:
+            raise AgentLinkSecurityError("Envelope missing mandatory digital signature ('sig')")
 
-        # Fallback to legacy v1 envelope
-        if "iv" in envelope and "data" in envelope:
+        # 1. Verify Ed25519 signature
+        canonical_str = f"v2:{link_id}:{sender_id}:{recipient_id}:{seq}:{timestamp}:{nonce}:{iv_b64}:{data_b64}"
+        if not self.verify_signature(peer_sign_pub_b64, canonical_str.encode("utf-8"), sig):
+            raise AgentLinkSecurityError(
+                f"Signature verification failed for message from '{sender_id}' on link '{link_id}'"
+            )
+
+        # 2. Decrypt with bound AAD and per-link key
+        aad = f"v2:{link_id}:{sender_id}:{recipient_id}:{seq}:{nonce}".encode("utf-8")
+        try:
             decrypted_bytes = self.decrypt(
                 peer_enc_pub_b64=peer_enc_pub_b64,
-                iv_b64=envelope["iv"],
-                data_b64=envelope["data"],
+                iv_b64=iv_b64,
+                data_b64=data_b64,
+                aad=aad,
+                link_id=link_id,
             )
             return decrypted_bytes.decode("utf-8")
-
-        raise AgentLinkSecurityError("Unrecognized envelope format")
+        except Exception as e:
+            raise AgentLinkSecurityError(f"Decryption / context authentication failed: {e}") from e
 
     def save(self, directory: Optional[Path] = None) -> Path:
         """Save keypair to disk with 0600 file permissions."""

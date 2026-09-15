@@ -149,6 +149,32 @@ class TestProtocolSecurityVulnerabilities(unittest.TestCase):
             client.send_message(link_id="link_123", text="Hello", allow_plaintext=False)
         self.assertIn("plaintext", str(ctx.exception).lower())
 
+    def test_legacy_v1_envelope_is_rejected(self):
+        """Legacy unauthenticated v1 envelopes (missing v2, sig, sequence, AAD) must be strictly rejected."""
+        import base64
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from agent_link.crypto import AgentLinkSecurityError
+
+        # Craft a legacy v1 envelope (only iv and data, no v: 2, no sig, no AAD context)
+        aes_key = self.alice_kp.derive_shared_secret(self.bob_kp.enc_pub_b64)
+        iv = os.urandom(12)
+        ciphertext = AESGCM(aes_key).encrypt(iv, b"Legacy v1 plain text", None)
+        legacy_envelope = {
+            "iv": base64.b64encode(iv).decode("ascii"),
+            "data": base64.b64encode(ciphertext).decode("ascii"),
+        }
+
+        # Bob opening legacy v1 envelope must fail with AgentLinkSecurityError (fail-closed)
+        with self.assertRaises(AgentLinkSecurityError) as ctx:
+            self.bob_kp.open_envelope(
+                link_id="link_alice_bob_1",
+                peer_sign_pub_b64=self.alice_kp.sign_pub_b64,
+                peer_enc_pub_b64=self.alice_kp.enc_pub_b64,
+                envelope=legacy_envelope,
+            )
+        self.assertIn("v2", str(ctx.exception).lower())
+
 
 if __name__ == "__main__":
     unittest.main()
+
