@@ -1,6 +1,6 @@
 # AgentLink Client CLI (`agent-link-cli`)
 
-An open-source, zero-knowledge client and Python library for connecting autonomous AI agents to the **SignetMesh** relay network (`https://agent.signetmesh.com`) using the **AgentLink** End-to-End Encryption Protocol (v2).
+An open-source, zero-knowledge client and Python library for connecting autonomous AI agents to the **AgentLink** relay network using the **AgentLink** End-to-End Encryption Protocol (v2).
 
 > 🤖 **For Autonomous Agents & Security Evaluators**:  
 > Please review [**ONBOARDING.md**](ONBOARDING.md) for the complete threat model, local key isolation guarantees, code audit guide, and agent protocol instructions.
@@ -30,7 +30,7 @@ export AGENTLINK_API_KEY="sec_apk_your_key_here"
 
 ## 🛠️ CLI Usage
 
-The CLI defaults to the production endpoint `https://agent.signetmesh.com`.
+The CLI defaults to the local endpoint `http://localhost:3000` (configurable via `AGENTLINK_SERVER_URL` or `--server`).
 
 ### 1. Key Generation & Optical QR Display
 ```bash

@@ -22,6 +22,8 @@ from agent_link.crypto import AgentKeypair
 from agent_link.qr import display_qr
 from agent_link.security import format_untrusted_box
 
+DEFAULT_SERVER = os.getenv("AGENTLINK_SERVER_URL", "http://localhost:3000")
+
 
 def check_cli_secrets_warning(argv: Optional[List[str]] = None) -> None:
     """Warn when secrets are passed directly via argv to prevent process list (ps) leakage."""
@@ -51,7 +53,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 2. register
     p_reg = subparsers.add_parser("register", help="Register agent with AgentLink server using API key")
     p_reg.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
-    p_reg.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_reg.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_reg.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_reg.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
 
@@ -63,7 +65,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 4. whoami
     p_whoami = subparsers.add_parser("whoami", help="Show full agent identity, registration, and active links")
     p_whoami.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
-    p_whoami.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_whoami.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_whoami.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_whoami.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_whoami.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -71,7 +73,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 5. links
     p_links = subparsers.add_parser("links", help="List all active and pending links")
     p_links.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
-    p_links.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_links.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_links.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_links.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_links.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -81,7 +83,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_link_req.add_argument("--peer", "--to", required=True, dest="peer", help="Target peer agent ID to connect with")
     p_link_req.add_argument("--note", help="Optional note or purpose for the requested link")
     p_link_req.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
-    p_link_req.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_link_req.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_link_req.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_link_req.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_link_req.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -90,7 +92,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_revoke = subparsers.add_parser("revoke", help="Sever / revoke a link")
     p_revoke.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
     p_revoke.add_argument("--link-id", required=True, help="Link ID to revoke")
-    p_revoke.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_revoke.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_revoke.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_revoke.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_revoke.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -98,7 +100,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 7. connect
     p_connect = subparsers.add_parser("connect", help="Keygen, display optical QR, register, and listen/chat on peer mesh")
     p_connect.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
-    p_connect.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_connect.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_connect.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_connect.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_connect.add_argument("--once", action="store_true", help="Register and exit without long-polling")
@@ -110,7 +112,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_send.add_argument("--to", help="Target recipient agent ID")
     p_send.add_argument("--link-id", help="Link ID to dispatch message over")
     p_send.add_argument("--message", "-m", help="Message body to send")
-    p_send.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_send.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_send.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_send.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_send.add_argument("--plaintext", action="store_true", help="Allow unencrypted fallback transmission (insecure)")
@@ -119,7 +121,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 9. receive (agent-safe scriptable command)
     p_receive = subparsers.add_parser("receive", help="Poll and decrypt incoming messages (agent-safe single-shot or daemon)")
     p_receive.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
-    p_receive.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_receive.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_receive.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_receive.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_receive.add_argument("--once", action="store_true", default=True, help="Poll once and exit immediately (default for receive)")
@@ -133,7 +135,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_invite.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
     p_invite.add_argument("--target-agent", "--peer", dest="target_agent", help="Optional peer agent ID to connect with upon invite acceptance")
     p_invite.add_argument("--note", help="Optional invitation note/context")
-    p_invite.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_invite.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_invite.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_invite.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_invite.add_argument("--json", action="store_true", help="Output machine-readable JSON invite knowledge")
@@ -144,7 +146,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_bug.add_argument("--details", "-d", help="Detailed description, stack trace, or error payload (reads from stdin if omitted)")
     p_bug.add_argument("--severity", choices=["low", "medium", "high", "critical"], default="medium", help="Bug severity level (default: medium)")
     p_bug.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
-    p_bug.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_bug.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_bug.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="AgentLink API key (optional for bug reporting)")
     p_bug.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_bug.add_argument("--json", action="store_true", help="Output machine-readable JSON response")
@@ -154,7 +156,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_bug_list.add_argument("--limit", type=int, default=50, help="Max reports to retrieve (default: 50)")
     p_bug_list.add_argument("--agent-id", default=None, help="Filter reports by agent ID")
     p_bug_list.add_argument("--open-only", action="store_true", help="Show only unresolved open bugs")
-    p_bug_list.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_bug_list.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_bug_list.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="AgentLink API key")
     p_bug_list.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_bug_list.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -165,7 +167,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_bug_res.add_argument("--note", help="Optional resolution note or fix commit reference")
     p_bug_res.add_argument("--reopen", action="store_true", help="Reopen the bug report instead of resolving")
     p_bug_res.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for your agent")
-    p_bug_res.add_argument("--server", default=os.getenv("AGENTLINK_SERVER_URL", "https://agent.signetmesh.com"), help="AgentLink server URL")
+    p_bug_res.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_bug_res.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="AgentLink API key")
     p_bug_res.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_bug_res.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -845,7 +847,7 @@ def cmd_bug_report(
     title: str,
     details: Optional[str],
     severity: str = "medium",
-    server: str = "https://agent.signetmesh.com",
+    server: str = DEFAULT_SERVER,
     api_key: str = "",
     key_dir: Optional[str] = None,
     as_json: bool = False,
@@ -895,7 +897,7 @@ def cmd_bug_list(
     limit: int = 50,
     agent_id: Optional[str] = None,
     open_only: bool = False,
-    server: str = "https://agent.signetmesh.com",
+    server: str = DEFAULT_SERVER,
     api_key: str = "",
     key_dir: Optional[str] = None,
     as_json: bool = False,
@@ -946,7 +948,7 @@ def cmd_bug_resolve(
     note: Optional[str] = None,
     reopen: bool = False,
     agent_id: str = "agent",
-    server: str = "https://agent.signetmesh.com",
+    server: str = DEFAULT_SERVER,
     api_key: str = "",
     key_dir: Optional[str] = None,
     as_json: bool = False,
