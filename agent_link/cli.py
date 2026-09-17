@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 import queue
 import sys
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from agent_link.client import (
     AgentLinkClient,
@@ -16,7 +19,9 @@ from agent_link.client import (
     AgentLinkSecurityError,
     AgentLinkAuthError,
     AgentLinkNotFoundError,
+    AgentLinkNetworkError,
     AgentLinkTimeoutError,
+    AgentLinkTruncatedResponseError,
 )
 from agent_link.crypto import AgentKeypair
 from agent_link.qr import display_qr
@@ -119,7 +124,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_send.add_argument("--json", action="store_true", help="Output machine-readable JSON result")
 
     # 9. receive (agent-safe scriptable command)
-    p_receive = subparsers.add_parser("receive", help="Poll and decrypt incoming messages (agent-safe single-shot or daemon)")
+    p_receive = subparsers.add_parser("receive", help="Poll and decrypt incoming messages (single-shot), or run an inbox watcher daemon (--watch)")
     p_receive.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
     p_receive.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_receive.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
@@ -127,6 +132,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_receive.add_argument("--once", action="store_true", default=True, help="Poll once and exit immediately (default for receive)")
     p_receive.add_argument("--timeout", type=int, default=5, help="Poll timeout in seconds")
     p_receive.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    p_receive.add_argument("--watch", action="store_true", help="Daemon mode: long-poll in a loop, append raw envelopes to --inbox, print new ones as JSON lines")
+    p_receive.add_argument("--inbox", help="Path to the JSONL inbox file (required with --watch)")
+    p_receive.add_argument("--interval", type=float, default=2.0, help="Seconds between long-poll rounds in --watch mode")
+    p_receive.add_argument("--no-auth", action="store_true", help="Poll without an API key; the relay serves read endpoints anonymously")
 
     # 10. invite (generate secure email invite knowledge / token)
     # 11. invite
@@ -463,6 +472,123 @@ def cmd_send(
         return 1
 
 
+def _envelope_hash(message: Dict[str, Any]) -> str:
+    """Stable sha256 over the canonical JSON of a raw relay message (dedupe key)."""
+    canonical = json.dumps(message, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _load_seen_hashes(inbox_path: Path) -> Set[str]:
+    """Rebuild the dedupe set from an existing inbox file so restarts don't re-emit."""
+    seen: Set[str] = set()
+    if inbox_path.exists():
+        for line in inbox_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = record.get("message")
+            if isinstance(msg, dict):
+                seen.add(_envelope_hash(msg))
+    return seen
+
+
+def _watch_batch(
+    client: AgentLinkClient,
+    inbox_path: Path,
+    seen: Set[str],
+    timeout: int,
+) -> int:
+    """Poll once; append newly seen raw envelopes to the inbox file.
+
+    Each new message is appended as one JSON line
+    ({"received_at", "sha256", "message"}) and also printed as compact JSON
+    to stdout, one object per line, for supervisors that react in real time.
+    Returns the number of newly seen messages.
+    """
+    new_messages = []
+    raw_messages = client.poll_messages(timeout_seconds=timeout)
+    for m in raw_messages:
+        if not isinstance(m, dict):
+            continue
+        digest = _envelope_hash(m)
+        if digest in seen:
+            continue
+        seen.add(digest)
+        new_messages.append((digest, m))
+
+    if new_messages:
+        with inbox_path.open("a", encoding="utf-8") as fh:
+            for digest, m in new_messages:
+                record = {
+                    "received_at": datetime.now(timezone.utc).isoformat(),
+                    "sha256": digest,
+                    "message": m,
+                }
+                fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+                print(json.dumps(m, separators=(",", ":")))
+        sys.stdout.flush()
+    return len(new_messages)
+
+
+def cmd_receive_watch(
+    agent_id: str,
+    server: str,
+    api_key: str,
+    inbox: str,
+    interval: float = 2.0,
+    timeout: int = 15,
+    key_dir: Optional[str] = None,
+) -> int:
+    """Daemon mode: long-poll in a loop, durably store raw envelopes, emit new ones.
+
+    The watcher deliberately does NOT decrypt: envelopes stay opaque until a
+    privileged step opens them. It also deliberately does NOT require local
+    private keys, so a credential-less supervisor can run it.
+    """
+    inbox_path = Path(inbox)
+    try:
+        inbox_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"❌ Error: cannot create inbox directory: {e}", file=sys.stderr)
+        return 1
+
+    seen = _load_seen_hashes(inbox_path)
+
+    # Best effort: attach the local identity if present, but don't require it.
+    kp = None
+    try:
+        kp = AgentKeypair.load(agent_id=agent_id, directory=Path(key_dir) if key_dir else None)
+    except FileNotFoundError:
+        pass
+    client = AgentLinkClient(server_url=server, api_key=api_key or "", keypair=kp, agent_id=agent_id)
+
+    auth_note = "anonymous" if not client.api_key else "authenticated"
+    print(
+        f"👁️  watching {server}/api/agents/{agent_id}/poll ({auth_note}) "
+        f"-> {inbox_path} [{len(seen)} already seen]",
+        file=sys.stderr,
+    )
+    try:
+        while True:
+            try:
+                new_count = _watch_batch(client, inbox_path, seen, timeout)
+                if new_count:
+                    print(f"📨 {new_count} new message(s)", file=sys.stderr)
+            except (AgentLinkTimeoutError, AgentLinkNetworkError, AgentLinkTruncatedResponseError) as e:
+                print(f"⚠️  poll failed ({e}); retrying in {interval}s", file=sys.stderr)
+            except AgentLinkError as e:
+                print(f"❌ fatal relay error: {e}", file=sys.stderr)
+                return 1
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\n👋 watch stopped", file=sys.stderr)
+        return 0
+
+
 def cmd_receive(
     agent_id: str,
     server: str,
@@ -471,9 +597,22 @@ def cmd_receive(
     once: bool = True,
     timeout: int = 5,
     as_json: bool = False,
+    watch: bool = False,
+    inbox: Optional[str] = None,
+    interval: float = 2.0,
+    no_auth: bool = False,
 ) -> int:
-    if not api_key:
-        print("❌ Error: API key required.", file=sys.stderr)
+    if watch:
+        if not inbox:
+            print("❌ Error: --watch requires --inbox PATH for the durable message log.", file=sys.stderr)
+            return 1
+        return cmd_receive_watch(
+            agent_id, server, api_key or "",
+            inbox=inbox, interval=interval, timeout=timeout, key_dir=key_dir,
+        )
+
+    if not api_key and not no_auth:
+        print("❌ Error: API key required (or pass --no-auth for anonymous polling).", file=sys.stderr)
         return 1
 
     directory = Path(key_dir) if key_dir else None
@@ -1030,6 +1169,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             once=args.once,
             timeout=args.timeout,
             as_json=args.json,
+            watch=args.watch,
+            inbox=args.inbox,
+            interval=args.interval,
+            no_auth=args.no_auth,
         )
     elif args.command == "invite":
         return cmd_invite(

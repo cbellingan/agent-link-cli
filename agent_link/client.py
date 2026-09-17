@@ -24,12 +24,21 @@ from agent_link.security import (
 class AgentLinkClient:
     """Client for registering and communicating with an AgentLink relay server."""
 
-    def __init__(self, server_url: str, api_key: str, keypair: Optional[AgentKeypair] = None):
+    def __init__(
+        self,
+        server_url: str,
+        api_key: str,
+        keypair: Optional[AgentKeypair] = None,
+        agent_id: Optional[str] = None,
+    ):
         self.server_url = server_url.rstrip("/")
-        self.api_key = api_key.strip()
+        self.api_key = (api_key or "").strip()
         self.keypair = keypair
+        resolved_id = agent_id or (keypair.agent_id if keypair else None) or "client"
+        self.agent_id = resolved_id
         self.registered = False
-        self.replay_protector = ReplayProtector(agent_id=self.keypair.agent_id) if self.keypair else None
+        # Replay state only exists when we hold the private keys (outbound signing).
+        self.replay_protector = ReplayProtector(agent_id=self.agent_id) if keypair else None
 
     def _make_request(
         self,
@@ -42,10 +51,14 @@ class AgentLinkClient:
         url = f"{self.server_url}{path}"
         agent_str = self.keypair.agent_id if self.keypair else "client"
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
             "Accept": "application/json",
-            "User-Agent": f"AgentLink-CLI/{agent_str}",
+            "User-Agent": f"AgentLink-CLI/{self.agent_id}",
         }
+        # The relay serves read endpoints (poll, agents, links) without
+        # authentication. Only attach the Bearer credential when one is
+        # configured so credential-less watchers can poll anonymously.
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
 
         body_bytes = None
         if data is not None:
@@ -96,9 +109,11 @@ class AgentLinkClient:
 
     def register(self) -> Dict[str, Any]:
         """Register agent with the server using the human-provisioned API key."""
+        if not self.keypair:
+            raise AgentLinkError("register() requires the local keypair; this client is identity-less.")
         qr_dict = create_qr_payload(self.keypair)
         payload = {
-            "id": self.keypair.agent_id,
+            "id": self.agent_id,
             "signPub": self.keypair.sign_pub_b64,
             "encPub": self.keypair.enc_pub_b64,
             "kid": self.keypair.kid,
@@ -111,7 +126,7 @@ class AgentLinkClient:
     def poll_messages(self, timeout_seconds: int = 15) -> List[Dict[str, Any]]:
         """Long-poll the server for incoming messages, challenges, or assigned links."""
         ms = timeout_seconds * 1000
-        path = f"/api/agents/{self.keypair.agent_id}/poll?timeout={ms}"
+        path = f"/api/agents/{self.agent_id}/poll?timeout={ms}"
         try:
             res = self._make_request(path, method="GET", timeout=timeout_seconds + 5)
             return res.get("messages", [])
@@ -130,6 +145,8 @@ class AgentLinkClient:
         recipient_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Encrypt and dispatch signed v2 envelope over an active link."""
+        if not self.keypair or not self.replay_protector:
+            raise AgentLinkError("send_encrypted() requires the local keypair; this client is identity-less.")
         target_recipient = recipient_id or "peer"
         seq = self.replay_protector.next_outbound_seq(link_id)
         envelope = self.keypair.create_envelope(
@@ -140,7 +157,7 @@ class AgentLinkClient:
             seq=seq,
         )
         data = {
-            "senderId": self.keypair.agent_id,
+            "senderId": self.agent_id,
             "payload": envelope,
         }
         return self._make_request(f"/api/links/{link_id}/send", method="POST", data=data)
@@ -153,7 +170,7 @@ class AgentLinkClient:
                 "Pass 'allow_plaintext=True' or '--plaintext' if you explicitly wish to transmit in the clear."
             )
         data = {
-            "senderId": self.keypair.agent_id,
+            "senderId": self.agent_id,
             "payload": text,
         }
         return self._make_request(f"/api/links/{link_id}/message", method="POST", data=data)
@@ -164,10 +181,10 @@ class AgentLinkClient:
 
     def get_links(self) -> List[Dict[str, Any]]:
         """Fetch all links involving this agent."""
-        path = f"/api/links?agentId={self.keypair.agent_id}"
+        path = f"/api/links?agentId={self.agent_id}"
         res = self._make_request(path, method="GET")
         all_links = res.get("links", [])
-        my_id = self.keypair.agent_id
+        my_id = self.agent_id
         return [l for l in all_links if l.get("agentAId") == my_id or l.get("agentBId") == my_id]
 
     def get_agents(self, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -191,7 +208,7 @@ class AgentLinkClient:
         """Create a secure email invitation on the AgentLink server for a collaborator."""
         payload = {
             "toEmail": to_email,
-            "fromAgentId": self.keypair.agent_id if self.keypair else None,
+            "fromAgentId": self.agent_id,
             "note": note,
         }
         if target_agent_id:
@@ -203,9 +220,8 @@ class AgentLinkClient:
         
         The link is established in 'pending_approval' state awaiting human operator authorization.
         """
-        agent_id = self.keypair.agent_id if self.keypair else "agent"
         payload = {
-            "agentAId": agent_id,
+            "agentAId": self.agent_id,
             "agentBId": peer_agent_id,
             "note": note,
         }
@@ -223,7 +239,7 @@ class AgentLinkClient:
         Strictly enforces the maximum payload size of 10 KB (10,240 bytes).
         """
         payload: Dict[str, Any] = {
-            "agentId": self.keypair.agent_id if self.keypair else None,
+            "agentId": self.agent_id,
             "title": title,
             "details": details,
             "severity": severity,

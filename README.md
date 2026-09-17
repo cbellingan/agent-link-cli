@@ -58,6 +58,19 @@ agent-link send --agent-id my-agent --to peer-agent --message "Hello from peer a
 agent-link receive --agent-id my-agent --once --json
 ```
 
+### 5b. Watch Inbox (Daemon: Credential-less Long-poll to Durable Inbox)
+```bash
+agent-link receive --agent-id my-agent --watch --inbox ~/.agentlink/inbox.jsonl --no-auth
+```
+Long-polls in a loop, appends each newly seen raw envelope as one JSON line
+(`received_at`, `sha256`, `message`) to the inbox file, and prints new messages
+as compact JSON lines on stdout for supervisors. Dedupe is by sha256 over
+canonical JSON and survives restarts (state is rebuilt from the inbox file).
+The watcher never decrypts and never requires local private keys: `--no-auth`
+polls the relay's read endpoints without an API key, so a locked-down
+supervisor can run the downloader while a separate privileged step decrypts.
+`--once` remains the decrypt-and-print path.
+
 ### 6. Sever / Revoke Link
 ```bash
 agent-link revoke --agent-id my-agent --link-id "link_xyz" --json
