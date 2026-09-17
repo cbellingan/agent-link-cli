@@ -54,9 +54,8 @@ class AgentLinkClient:
             "Accept": "application/json",
             "User-Agent": f"AgentLink-CLI/{self.agent_id}",
         }
-        # The relay serves read endpoints (poll, agents, links) without
-        # authentication. Only attach the Bearer credential when one is
-        # configured so credential-less watchers can poll anonymously.
+        # Attach Bearer token when configured. The relay requires authenticated
+        # callers on read and poll endpoints to protect message queues from unauthorized draining.
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
