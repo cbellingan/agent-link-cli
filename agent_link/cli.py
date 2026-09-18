@@ -54,6 +54,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_keygen = subparsers.add_parser("keygen", help="Generate or display local Ed25519/X25519 identity keys and QR")
     p_keygen.add_argument("--agent-id", default=os.getenv("AGENT_ID", "agent"), help="Identifier for this agent")
     p_keygen.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys (defaults to ~/.agent-link)")
+    p_keygen.add_argument("--json", action="store_true", help="Output machine-readable JSON (suppresses ASCII QR code)")
+    p_keygen.add_argument("--quiet", "-q", action="store_true", help="Suppress ASCII QR code output")
 
     # 2. register
     p_reg = subparsers.add_parser("register", help="Register agent with AgentLink server using API key")
@@ -61,6 +63,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_reg.add_argument("--server", default=DEFAULT_SERVER, help="AgentLink server URL")
     p_reg.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_reg.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
+    p_reg.add_argument("--json", action="store_true", help="Output machine-readable JSON (suppresses ASCII QR code)")
+    p_reg.add_argument("--quiet", "-q", action="store_true", help="Suppress ASCII QR code output")
 
     # 3. status
     p_status = subparsers.add_parser("status", help="Show local identity status and fingerprints")
@@ -109,6 +113,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_connect.add_argument("--api-key", default=os.getenv("AGENTLINK_API_KEY", ""), help="Human-provisioned API key")
     p_connect.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_connect.add_argument("--once", action="store_true", help="Register and exit without long-polling")
+    p_connect.add_argument("--interactive", "-i", action="store_true", help="Run interactive stdin chat loop (for human operators in terminal)")
     p_connect.add_argument("--plaintext", action="store_true", help="Allow unencrypted fallback transmissions (insecure)")
 
     # 8. send
@@ -133,7 +138,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_receive.add_argument("--timeout", type=int, default=5, help="Poll timeout in seconds")
     p_receive.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     p_receive.add_argument("--watch", action="store_true", help="Daemon mode: long-poll in a loop, append raw envelopes to --inbox, print new ones as JSON lines")
-    p_receive.add_argument("--inbox", help="Path to the JSONL inbox file (required with --watch)")
+    p_receive.add_argument("--inbox", help="Path to the JSONL inbox file")
+    p_receive.add_argument("--decrypt", action="store_true", help="Decrypt envelopes from --inbox file, or decrypt in real-time in --watch mode")
     p_receive.add_argument("--interval", type=float, default=2.0, help="Seconds between long-poll rounds in --watch mode")
     p_receive.add_argument("--no-auth", action="store_true", help="Poll without an API key; the relay serves read endpoints anonymously")
 
@@ -184,14 +190,39 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def cmd_keygen(agent_id: str, key_dir: Optional[str] = None) -> int:
+def cmd_keygen(
+    agent_id: str,
+    key_dir: Optional[str] = None,
+    as_json: bool = False,
+    quiet: bool = False,
+) -> int:
     directory = Path(key_dir) if key_dir else None
     kp = AgentKeypair.keygen(agent_id=agent_id, directory=directory)
-    print(display_qr(kp))
+    if as_json:
+        data = {
+            "status": "ok",
+            "agentId": kp.agent_id,
+            "kid": kp.kid,
+            "signPub": kp.sign_pub_b64,
+            "encPub": kp.enc_pub_b64,
+        }
+        print(json.dumps(data, indent=2))
+        return 0
+    if not quiet:
+        print(display_qr(kp))
+    else:
+        print(f"🔑 Generated keypair for '{kp.agent_id}' (kid: {kp.kid})")
     return 0
 
 
-def cmd_register(agent_id: str, server: str, api_key: str, key_dir: Optional[str] = None) -> int:
+def cmd_register(
+    agent_id: str,
+    server: str,
+    api_key: str,
+    key_dir: Optional[str] = None,
+    as_json: bool = False,
+    quiet: bool = False,
+) -> int:
     if not api_key:
         print("❌ Error: API key required. Provide via --api-key or set AGENTLINK_API_KEY environment variable.", file=sys.stderr)
         return 1
@@ -203,14 +234,33 @@ def cmd_register(agent_id: str, server: str, api_key: str, key_dir: Optional[str
         kp = AgentKeypair.keygen(agent_id=agent_id, directory=directory)
     kp.save(directory=directory)
 
-    print(f"📡 Registering agent '{agent_id}' with AgentLink server: {server}")
+    if not as_json and not quiet:
+        print(f"📡 Registering agent '{agent_id}' with AgentLink server: {server}")
     client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
     try:
         res = client.register()
+        if as_json:
+            out = {
+                "status": res.get("status", "ok"),
+                "agentId": res.get("agentId", agent_id),
+                "kid": kp.kid,
+                "pollUrl": res.get("pollUrl"),
+                "registeredAt": res.get("registeredAt"),
+                "nextStep": f"Ask your human operator to approve any pending peer links in the dashboard, then check links with: python3 -m agent_link.cli links --agent-id {agent_id} --json",
+            }
+            print(json.dumps(out, indent=2))
+            return 0
+
         print(f"✅ Successfully registered! Status: {res.get('status')} | Agent ID: {res.get('agentId')}")
         print(f"🔑 Identity Key ID: {kp.kid}")
-        print("\nDisplaying Optical Public Identity QR Code for Human Verification:")
-        print(display_qr(kp))
+        if not quiet:
+            print("\nDisplaying Optical Public Identity QR Code for Human Verification:")
+            print(display_qr(kp))
+
+        print("\n👉 Next Steps:")
+        print("1. Have your human operator approve any peer links in the AgentLink dashboard.")
+        print(f"2. Check link status: python3 -m agent_link.cli links --agent-id \"{agent_id}\"")
+        print(f"3. Start listening for messages: python3 -m agent_link.cli receive --agent-id \"{agent_id}\" --watch --inbox ~/.agent-link/inbox.jsonl")
         return 0
     except Exception as e:
         print(f"❌ Registration failed: {e}", file=sys.stderr)
@@ -305,6 +355,18 @@ def cmd_links(agent_id: str, server: str, api_key: str, key_dir: Optional[str] =
         peer_id = l.get("agentBId") if l.get("agentAId") == agent_id else l.get("agentAId")
         verification = l.get("peerVerification", "none")
         print(f"  - Link ID: {link_id} | Peer: {peer_id} | Status: {status} | Verification: {verification}")
+
+    has_pending = any(l.get("status") == "pending_approval" for l in links)
+    if has_pending:
+        print("\n⏳ Notice: Some links are 'pending_approval'.")
+        print("   Both human operators must approve the link in their dashboards before messages can flow.")
+        print(f"   👉 Re-check status: python3 -m agent_link.cli links --agent-id \"{agent_id}\"")
+
+    has_active = any(l.get("status") == "active" for l in links)
+    if has_active:
+        print("\n🚀 Active link(s) ready for communication:")
+        print(f"   👉 Send message: python3 -m agent_link.cli send --agent-id \"{agent_id}\" --to <PEER_ID> --message \"...\" --json")
+        print(f"   👉 Listen for replies: python3 -m agent_link.cli receive --agent-id \"{agent_id}\" --watch --inbox ~/.agent-link/inbox.jsonl")
     return 0
 
 
@@ -501,12 +563,14 @@ def _watch_batch(
     inbox_path: Path,
     seen: Set[str],
     timeout: int,
+    decrypt: bool = False,
+    as_json: bool = False,
 ) -> int:
     """Poll once; append newly seen raw envelopes to the inbox file.
 
     Each new message is appended as one JSON line
-    ({"received_at", "sha256", "message"}) and also printed as compact JSON
-    to stdout, one object per line, for supervisors that react in real time.
+    ({"received_at", "sha256", "message"}) and also printed to stdout.
+    If decrypt is True and a local keypair is available, decrypted content is output.
     Returns the number of newly seen messages.
     """
     new_messages = []
@@ -529,7 +593,56 @@ def _watch_batch(
                     "message": m,
                 }
                 fh.write(json.dumps(record, separators=(",", ":")) + "\n")
-                print(json.dumps(m, separators=(",", ":")))
+                if decrypt and client.keypair:
+                    sender_id = m.get("senderId", "peer")
+                    link_id = m.get("linkId", "unknown")
+                    payload = m.get("payload")
+                    sender_enc_pub = m.get("senderEncPub")
+                    sender_sign_pub = m.get("senderSignPub")
+                    decrypted_text = ""
+                    is_e2ee = False
+                    is_signed = False
+                    if isinstance(payload, dict) and payload.get("v") == 2:
+                        is_e2ee = True
+                        is_signed = True
+                        try:
+                            client.replay_protector.validate_inbound(
+                                link_id=link_id,
+                                sender_id=sender_id,
+                                seq=payload.get("seq", 0),
+                                timestamp=payload.get("timestamp", 0),
+                            )
+                            decrypted_text = client.keypair.open_envelope(
+                                link_id=link_id,
+                                peer_sign_pub_b64=sender_sign_pub or "",
+                                peer_enc_pub_b64=sender_enc_pub or "",
+                                envelope=payload,
+                            )
+                        except Exception as e:
+                            decrypted_text = f"[REJECTED: {e}]"
+                    elif isinstance(payload, str):
+                        decrypted_text = payload
+
+                    if as_json:
+                        print(json.dumps({
+                            "received_at": record["received_at"],
+                            "sha256": digest,
+                            "linkId": link_id,
+                            "senderId": sender_id,
+                            "text": decrypted_text,
+                            "encrypted": is_e2ee,
+                            "signed": is_signed,
+                        }, separators=(",", ":")))
+                    else:
+                        print(format_untrusted_box(
+                            sender_id=sender_id,
+                            link_id=link_id,
+                            text=decrypted_text,
+                            is_e2ee=is_e2ee,
+                            is_signed=is_signed,
+                        ))
+                else:
+                    print(json.dumps(m, separators=(",", ":")))
         sys.stdout.flush()
     return len(new_messages)
 
@@ -542,12 +655,13 @@ def cmd_receive_watch(
     interval: float = 2.0,
     timeout: int = 15,
     key_dir: Optional[str] = None,
+    decrypt: bool = False,
+    as_json: bool = False,
 ) -> int:
     """Daemon mode: long-poll in a loop, durably store raw envelopes, emit new ones.
 
-    The watcher deliberately does NOT decrypt: envelopes stay opaque until a
-    privileged step opens them. It also deliberately does NOT require local
-    private keys, so a credential-less supervisor can run it.
+    The watcher durably appends envelopes to --inbox. If --decrypt is specified
+    and local keys are present, it also decrypts incoming messages on the fly.
     """
     inbox_path = Path(inbox)
     try:
@@ -569,13 +683,14 @@ def cmd_receive_watch(
     auth_note = "anonymous" if not client.api_key else "authenticated"
     print(
         f"👁️  watching {server}/api/agents/{agent_id}/poll ({auth_note}) "
-        f"-> {inbox_path} [{len(seen)} already seen]",
+        f"-> {inbox_path} [{len(seen)} already seen]"
+        f"{' (with real-time decryption)' if decrypt and kp else ''}",
         file=sys.stderr,
     )
     try:
         while True:
             try:
-                new_count = _watch_batch(client, inbox_path, seen, timeout)
+                new_count = _watch_batch(client, inbox_path, seen, timeout, decrypt=decrypt, as_json=as_json)
                 if new_count:
                     print(f"📨 {new_count} new message(s)", file=sys.stderr)
             except (AgentLinkTimeoutError, AgentLinkNetworkError, AgentLinkTruncatedResponseError) as e:
@@ -589,6 +704,98 @@ def cmd_receive_watch(
         return 0
 
 
+def decrypt_inbox_file(
+    inbox_path: Path,
+    kp: AgentKeypair,
+    replay_protector: ReplayProtector,
+    as_json: bool = False,
+) -> int:
+    """Decrypt and verify envelopes recorded in an offline JSONL inbox file."""
+    if not inbox_path.exists():
+        print(f"❌ Error: Inbox file not found: {inbox_path}", file=sys.stderr)
+        return 1
+
+    decrypted_records: List[Dict[str, Any]] = []
+    lines = inbox_path.read_text(encoding="utf-8").splitlines()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            raw_entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        m = raw_entry.get("message") if isinstance(raw_entry, dict) and "message" in raw_entry else raw_entry
+        if not isinstance(m, dict):
+            continue
+
+        sender_id = m.get("senderId", "peer")
+        link_id = m.get("linkId", "unknown")
+        payload = m.get("payload")
+        is_encrypted = False
+        is_signed = False
+        decrypted_text = ""
+        err_note = None
+
+        if isinstance(payload, dict):
+            sender_enc_pub = m.get("senderEncPub")
+            sender_sign_pub = m.get("senderSignPub")
+
+            if payload.get("v") == 2:
+                is_encrypted = True
+                is_signed = True
+                seq = payload.get("seq", 0)
+                ts = payload.get("timestamp", 0)
+
+                try:
+                    replay_protector.validate_inbound(
+                        link_id=link_id,
+                        sender_id=sender_id,
+                        seq=seq,
+                        timestamp=ts,
+                    )
+                    decrypted_text = kp.open_envelope(
+                        link_id=link_id,
+                        peer_sign_pub_b64=sender_sign_pub or "",
+                        peer_enc_pub_b64=sender_enc_pub or "",
+                        envelope=payload,
+                    )
+                except Exception as sec_err:
+                    err_note = f"Security verification rejected: {sec_err}"
+                    decrypted_text = f"[REJECTED: {sec_err}]"
+            elif "iv" in payload and "data" in payload:
+                is_encrypted = True
+                err_note = "Legacy unauthenticated v1 envelope rejected (v2 required)"
+                decrypted_text = "[REJECTED: Legacy unauthenticated v1 envelope rejected. Protocol v2 with Ed25519 signature is strictly required]"
+        elif isinstance(payload, str):
+            decrypted_text = payload
+
+        msg_record = {
+            "linkId": link_id,
+            "senderId": sender_id,
+            "text": decrypted_text,
+            "encrypted": is_encrypted,
+            "signed": is_signed,
+            "error": err_note,
+            "receivedAt": raw_entry.get("received_at") if isinstance(raw_entry, dict) else None,
+        }
+        decrypted_records.append(msg_record)
+
+        if not as_json:
+            print(format_untrusted_box(
+                sender_id=sender_id,
+                link_id=link_id,
+                text=decrypted_text,
+                is_e2ee=is_encrypted,
+                is_signed=is_signed,
+            ))
+
+    if as_json:
+        print(json.dumps({"status": "ok", "messages": decrypted_records}, indent=2))
+    return 0
+
+
 def cmd_receive(
     agent_id: str,
     server: str,
@@ -599,6 +806,7 @@ def cmd_receive(
     as_json: bool = False,
     watch: bool = False,
     inbox: Optional[str] = None,
+    decrypt: bool = False,
     interval: float = 2.0,
     no_auth: bool = False,
 ) -> int:
@@ -609,7 +817,18 @@ def cmd_receive(
         return cmd_receive_watch(
             agent_id, server, api_key or "",
             inbox=inbox, interval=interval, timeout=timeout, key_dir=key_dir,
+            decrypt=decrypt, as_json=as_json,
         )
+
+    if inbox:
+        directory = Path(key_dir) if key_dir else None
+        try:
+            kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
+        except FileNotFoundError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            return 1
+        client = AgentLinkClient(server_url=server, api_key=api_key or "", keypair=kp, agent_id=agent_id)
+        return decrypt_inbox_file(Path(inbox), kp, client.replay_protector, as_json=as_json)
 
     if not api_key and not no_auth:
         print("❌ Error: API key required (or pass --no-auth for anonymous polling).", file=sys.stderr)
@@ -708,6 +927,7 @@ def cmd_connect(
     key_dir: Optional[str] = None,
     once: bool = False,
     allow_plaintext: bool = False,
+    interactive: bool = False,
 ) -> int:
     if agent_id == "agent":
         print("💡 Tip: Connecting as default agent ID 'agent'. To use a custom ID (e.g. 'ted'), use: --agent-id ted\n")
@@ -715,6 +935,19 @@ def cmd_connect(
     ret = cmd_register(agent_id, server, api_key, key_dir=key_dir)
     if ret != 0 or once:
         return ret
+
+    # Guard autonomous agents against hanging on stdin
+    if not interactive and not sys.stdin.isatty():
+        print(
+            f"\nℹ️  [AUTONOMOUS AGENT DETECTED] Stdin is not a TTY and '--interactive' was not specified.\n"
+            f"   Agent registered successfully. Skipping interactive terminal chat loop.\n"
+            f"   👉 Check links: python3 -m agent_link.cli links --agent-id \"{agent_id}\"\n"
+            f"   👉 To listen continuously in background, use: python3 -m agent_link.cli receive --agent-id \"{agent_id}\" --watch --inbox ~/.agent-link/inbox.jsonl"
+        )
+        return 0
+
+    if not interactive and sys.stdin.isatty():
+        print("\n⚠️  [NOTICE] Entering interactive terminal chat loop. If running as an autonomous agent, use '--once' or 'receive --watch' instead to avoid waiting on stdin.")
 
     directory = Path(key_dir) if key_dir else None
     kp = AgentKeypair.load(agent_id=agent_id, directory=directory)
@@ -1125,9 +1358,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     check_cli_secrets_warning(argv)
     args = parse_args(argv)
     if args.command == "keygen":
-        return cmd_keygen(args.agent_id, key_dir=args.key_dir)
+        return cmd_keygen(args.agent_id, key_dir=args.key_dir, as_json=args.json, quiet=getattr(args, "quiet", False))
     elif args.command == "register":
-        return cmd_register(args.agent_id, args.server, args.api_key, key_dir=args.key_dir)
+        return cmd_register(args.agent_id, args.server, args.api_key, key_dir=args.key_dir, as_json=args.json, quiet=getattr(args, "quiet", False))
     elif args.command == "status":
         return cmd_status(args.agent_id, key_dir=args.key_dir)
     elif args.command == "whoami":
@@ -1147,7 +1380,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.command == "revoke":
         return cmd_revoke(args.agent_id, args.server, args.api_key, link_id=args.link_id, key_dir=args.key_dir, as_json=args.json)
     elif args.command == "connect":
-        return cmd_connect(args.agent_id, args.server, args.api_key, key_dir=args.key_dir, once=args.once, allow_plaintext=args.plaintext)
+        return cmd_connect(
+            args.agent_id,
+            args.server,
+            args.api_key,
+            key_dir=args.key_dir,
+            once=args.once,
+            allow_plaintext=args.plaintext,
+            interactive=getattr(args, "interactive", False),
+        )
     elif args.command == "send":
         return cmd_send(
             args.agent_id,
@@ -1171,6 +1412,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             as_json=args.json,
             watch=args.watch,
             inbox=args.inbox,
+            decrypt=getattr(args, "decrypt", False),
             interval=args.interval,
             no_auth=args.no_auth,
         )
