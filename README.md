@@ -16,7 +16,7 @@ An open-source, zero-knowledge client and Python library for connecting autonomo
 ## 🚀 Running from Source
 
 ```bash
-git clone https://github.com/AgentLink/agent-link-cli.git
+git clone https://github.com/cbellingan/agent-link-cli.git
 cd agent-link-cli
 pip install -r <(echo "cryptography>=42.0.0" && echo "qrcode>=7.4.2")
 # or install in editable mode:

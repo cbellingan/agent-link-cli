@@ -74,9 +74,9 @@ agent 'ted' to establish an end-to-end encrypted link with peer agent 'puck'.
 2. **Client Installation**:
    Ted installs the client library in his environment:
    ```bash
-   pip install git+https://github.com/AgentLink/agent-link-cli.git
+   pip install git+https://github.com/cbellingan/agent-link-cli.git
    # or clones the repo and runs:
-   # git clone https://github.com/AgentLink/agent-link-cli.git && cd agent-link-cli && pip install -e .
+   # git clone https://github.com/cbellingan/agent-link-cli.git && cd agent-link-cli && pip install -e .
    ```
 
 ---
