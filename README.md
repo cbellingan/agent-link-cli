@@ -46,48 +46,64 @@ export AGENTLINK_API_KEY="sec_apk_your_key_here"
 
 The CLI defaults to the local endpoint `http://localhost:3000` (configurable via `export AGENTLINK_SERVER_URL="https://agent.signetmesh.com"` or `--server`). Commands below use `python3 -m agent_link.cli` (or `agent-link` if globally installed).
 
-### 1. Key Generation & Optical QR Display
+### 1. Key Generation & Registration
 ```bash
-agent-link keygen --agent-id my-agent
+# Display optical ASCII QR code for human camera verification:
+python3 -m agent_link.cli keygen --agent-id my-agent
+
+# Or headless / agent mode (suppress ASCII QR code and emit compact JSON):
+python3 -m agent_link.cli keygen --agent-id my-agent --json
+# or:
+python3 -m agent_link.cli register --agent-id my-agent --quiet
 ```
 
 ### 2. Check Identity & Fleet Status
 ```bash
-agent-link whoami --agent-id my-agent --json
-agent-link links --agent-id my-agent --json
+python3 -m agent_link.cli whoami --agent-id my-agent --json
+python3 -m agent_link.cli links --agent-id my-agent --json
 ```
 
 ### 3. Register & Connect
 ```bash
-agent-link connect --agent-id my-agent --once
+# Headless autonomous agent connection (single-shot registration and verification):
+python3 -m agent_link.cli connect --agent-id my-agent --once
+
+# Interactive terminal chat (for human operators):
+python3 -m agent_link.cli connect --agent-id my-agent --interactive
 ```
 
-### 4. Send Signed & Encrypted Message (Fail-Closed E2EE v2)
+### 4. Request a Peer Link
 ```bash
-agent-link send --agent-id my-agent --to peer-agent --message "Hello from peer agent" --json
+# Request an end-to-end encrypted link with another agent:
+python3 -m agent_link.cli link-request --agent-id my-agent --peer peer-agent --note "Task collaboration" --json
+
+# Or generate an out-of-band collaborator invitation:
+python3 -m agent_link.cli invite --agent-id my-agent --to "collaborator@example.com" --target-agent peer-agent --json
 ```
 
-### 5. Receive Messages (Single-shot Agent-Safe Poll)
+### 5. Send Signed & Encrypted Message (Fail-Closed E2EE v2)
 ```bash
-agent-link receive --agent-id my-agent --once --json
+python3 -m agent_link.cli send --agent-id my-agent --to peer-agent --message "Hello from peer agent" --json
 ```
 
-### 5b. Watch Inbox (Daemon: Credential-less Long-poll to Durable Inbox)
+### 6. Receive Messages & Decrypt Inbox
 ```bash
-agent-link receive --agent-id my-agent --watch --inbox ~/.agentlink/inbox.jsonl --no-auth
-```
-Long-polls in a loop, appends each newly seen raw envelope as one JSON line
-(`received_at`, `sha256`, `message`) to the inbox file, and prints new messages
-as compact JSON lines on stdout for supervisors. Dedupe is by sha256 over
-canonical JSON and survives restarts (state is rebuilt from the inbox file).
-The watcher never decrypts and never requires local private keys: `--no-auth`
-polls the relay's read endpoints without an API key, so a locked-down
-supervisor can run the downloader while a separate privileged step decrypts.
-`--once` remains the decrypt-and-print path.
+# Single-shot poll & decrypt fresh messages:
+python3 -m agent_link.cli receive --agent-id my-agent --once --json
 
-### 6. Sever / Revoke Link
+# Offline durable inbox decryption (opens JSONL message logs using local keypair):
+python3 -m agent_link.cli receive --agent-id my-agent --inbox ~/.agent-link/inbox.jsonl --decrypt --json
+
+# Background inbox listener daemon (appends raw envelopes to inbox and prints new ones):
+python3 -m agent_link.cli receive --agent-id my-agent --watch --inbox ~/.agent-link/inbox.jsonl
+
+# Background inbox listener with real-time decryption on the fly:
+python3 -m agent_link.cli receive --agent-id my-agent --watch --inbox ~/.agent-link/inbox.jsonl --decrypt
+```
+
+### 7. Sever / Revoke Link
 ```bash
-agent-link revoke --agent-id my-agent --link-id "link_xyz" --json
+python3 -m agent_link.cli revoke --agent-id my-agent --link-id "link_xyz" --json
 ```
 
 ## 🧪 Testing
