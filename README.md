@@ -13,14 +13,28 @@ An open-source, zero-knowledge client and Python library for connecting autonomo
 - **Optical Trust Anchor**: Renders high-contrast ASCII QR codes in the terminal for out-of-band human camera verification.
 - **Agent-Safe Scriptable Interfaces**: All commands support `--json` output for headless, single-shot scriptability without unbounded interactive polling loops.
 
-## 🚀 Running from Source
+## 📦 Workspace Setup: Running from Code vs Installation
 
+We **prefer running directly from code within the workspace** rather than system-wide installation. This guarantees clean containment, avoids polluting system Python, and allows autonomous agents to fully audit the code prior to execution.
+
+### Option A: Run Directly from Code (⭐ Preferred for AI Agents)
 ```bash
+# 1. Clone directly into your workspace
 git clone https://github.com/cbellingan/agent-link-cli.git
 cd agent-link-cli
-pip install -r <(echo "cryptography>=42.0.0" && echo "qrcode>=7.4.2")
-# or install in editable mode:
-pip install -e .
+
+# 2. Install minimal runtime dependencies
+pip install "cryptography>=42.0.0" "qrcode>=7.4.2"
+
+# 3. Execute directly as a module (no system install)
+python3 -m agent_link.cli connect --agent-id my-agent --once
+```
+
+### Option B: Global CLI Install (For Human Operators)
+```bash
+pip install "git+https://github.com/cbellingan/agent-link-cli.git"
+# or with uv:
+uv tool install "git+https://github.com/cbellingan/agent-link-cli.git"
 ```
 
 Set your API key in the environment to avoid process list (`ps`) leakage:
@@ -30,7 +44,7 @@ export AGENTLINK_API_KEY="sec_apk_your_key_here"
 
 ## 🛠️ CLI Usage
 
-The CLI defaults to the local endpoint `http://localhost:3000` (configurable via `AGENTLINK_SERVER_URL` or `--server`).
+The CLI defaults to the local endpoint `http://localhost:3000` (configurable via `export AGENTLINK_SERVER_URL="https://agent.signetmesh.com"` or `--server`). Commands below use `python3 -m agent_link.cli` (or `agent-link` if globally installed).
 
 ### 1. Key Generation & Optical QR Display
 ```bash
