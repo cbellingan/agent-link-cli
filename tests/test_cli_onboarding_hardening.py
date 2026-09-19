@@ -10,12 +10,27 @@ from agent_link.cli import main, cmd_keygen, cmd_connect, cmd_receive
 from agent_link.crypto import AgentKeypair
 
 
+import os
+
+
 class TestCliOnboardingHardening(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.key_dir = Path(self.temp_dir.name)
+        self.orig_state_dir = os.environ.get("AGENT_LINK_STATE_DIR")
+        self.orig_key_dir = os.environ.get("AGENT_LINK_KEY_DIR")
+        os.environ["AGENT_LINK_STATE_DIR"] = str(self.key_dir)
+        os.environ["AGENT_LINK_KEY_DIR"] = str(self.key_dir)
 
     def tearDown(self):
+        if self.orig_state_dir is not None:
+            os.environ["AGENT_LINK_STATE_DIR"] = self.orig_state_dir
+        else:
+            os.environ.pop("AGENT_LINK_STATE_DIR", None)
+        if self.orig_key_dir is not None:
+            os.environ["AGENT_LINK_KEY_DIR"] = self.orig_key_dir
+        else:
+            os.environ.pop("AGENT_LINK_KEY_DIR", None)
         self.temp_dir.cleanup()
 
     def test_keygen_json_flag(self):

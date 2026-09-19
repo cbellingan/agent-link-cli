@@ -55,7 +55,12 @@ class ReplayProtector:
     """Tracks monotonic sequence numbers and timestamps to prevent replay and re-ordering."""
 
     def __init__(self, state_dir: Optional[Path] = None, agent_id: str = "agent"):
-        self.state_dir = state_dir or (Path.home() / ".agent-link")
+        if state_dir is not None:
+            self.state_dir = Path(state_dir)
+        elif os.environ.get("AGENT_LINK_STATE_DIR"):
+            self.state_dir = Path(os.environ["AGENT_LINK_STATE_DIR"])
+        else:
+            self.state_dir = Path.home() / ".agent-link"
         self.agent_id = agent_id
         self.store_file = self.state_dir / f"seq_store_{agent_id}.json"
         self._data: Dict[str, Dict[str, Any]] = {}

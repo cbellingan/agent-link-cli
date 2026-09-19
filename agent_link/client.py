@@ -30,6 +30,7 @@ class AgentLinkClient:
         api_key: str,
         keypair: Optional[AgentKeypair] = None,
         agent_id: Optional[str] = None,
+        state_dir: Optional[Path] = None,
     ):
         self.server_url = server_url.rstrip("/")
         self.api_key = (api_key or "").strip()
@@ -37,8 +38,9 @@ class AgentLinkClient:
         resolved_id = agent_id or (keypair.agent_id if keypair else None) or "client"
         self.agent_id = resolved_id
         self.registered = False
+        resolved_state_dir = state_dir or (getattr(keypair, "directory", None) if keypair else None)
         # Replay state only exists when we hold the private keys (outbound signing).
-        self.replay_protector = ReplayProtector(agent_id=self.agent_id) if keypair else None
+        self.replay_protector = ReplayProtector(state_dir=resolved_state_dir, agent_id=self.agent_id) if keypair else None
 
     def _make_request(
         self,

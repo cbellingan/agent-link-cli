@@ -22,6 +22,14 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from agent_link.security import AgentLinkSecurityError
 
 
+def _default_key_dir() -> Path:
+    if os.environ.get("AGENT_LINK_KEY_DIR"):
+        return Path(os.environ["AGENT_LINK_KEY_DIR"])
+    if os.environ.get("AGENT_LINK_STATE_DIR"):
+        return Path(os.environ["AGENT_LINK_STATE_DIR"])
+    return Path.home() / ".agent-link"
+
+
 class AgentKeypair:
     """Manages an agent's asymmetric keys and E2EE cryptographic routines."""
 
@@ -30,10 +38,12 @@ class AgentKeypair:
         ed25519_priv: Optional[ed25519.Ed25519PrivateKey] = None,
         x25519_priv: Optional[x25519.X25519PrivateKey] = None,
         agent_id: str = "agent",
+        directory: Optional[Path] = None,
     ):
         self.agent_id = agent_id
         self._ed25519_priv = ed25519_priv or ed25519.Ed25519PrivateKey.generate()
         self._x25519_priv = x25519_priv or x25519.X25519PrivateKey.generate()
+        self.directory = Path(directory) if directory else _default_key_dir()
 
     @property
     def ed25519_public(self) -> ed25519.Ed25519PublicKey:
@@ -232,8 +242,9 @@ class AgentKeypair:
 
     def save(self, directory: Optional[Path] = None) -> Path:
         """Save keypair to disk with 0600 file permissions."""
-        dir_path = directory or (Path.home() / ".agent-link")
+        dir_path = Path(directory) if directory else self.directory
         dir_path.mkdir(parents=True, exist_ok=True)
+        self.directory = dir_path
         key_file = dir_path / f"{self.agent_id}.json"
 
         ed_raw = self._ed25519_priv.private_bytes(
@@ -264,7 +275,7 @@ class AgentKeypair:
     @classmethod
     def load(cls, agent_id: str, directory: Optional[Path] = None) -> AgentKeypair:
         """Load existing keypair from disk. Raises FileNotFoundError if missing (typo protection)."""
-        dir_path = directory or (Path.home() / ".agent-link")
+        dir_path = Path(directory) if directory else _default_key_dir()
         key_file = dir_path / f"{agent_id}.json"
 
         if not key_file.exists():
@@ -278,15 +289,15 @@ class AgentKeypair:
         x_bytes = base64.b64decode(data["x25519_priv_b64"])
         ed_priv = ed25519.Ed25519PrivateKey.from_private_bytes(ed_bytes)
         x_priv = x25519.X25519PrivateKey.from_private_bytes(x_bytes)
-        return cls(ed25519_priv=ed_priv, x25519_priv=x_priv, agent_id=agent_id)
+        return cls(ed25519_priv=ed_priv, x25519_priv=x_priv, agent_id=agent_id, directory=dir_path)
 
     @classmethod
     def keygen(cls, agent_id: str, directory: Optional[Path] = None, overwrite: bool = False) -> AgentKeypair:
         """Explicitly generate and persist a new agent identity."""
-        dir_path = directory or (Path.home() / ".agent-link")
+        dir_path = Path(directory) if directory else _default_key_dir()
         key_file = dir_path / f"{agent_id}.json"
         if key_file.exists() and not overwrite:
             return cls.load(agent_id, directory=dir_path)
-        kp = cls(agent_id=agent_id)
+        kp = cls(agent_id=agent_id, directory=dir_path)
         kp.save(dir_path)
         return kp
