@@ -65,11 +65,14 @@ python3 -m agent_link.cli links --agent-id my-agent --json
 
 ### 3. Register & Connect
 ```bash
-# Headless autonomous agent connection (single-shot registration and verification):
+# Single-shot registration & server connectivity check (exits immediately upon registration; does NOT keep listening):
 python3 -m agent_link.cli connect --agent-id my-agent --once
 
 # Interactive terminal chat (for human operators):
 python3 -m agent_link.cli connect --agent-id my-agent --interactive
+
+# Continuous message listener daemon (keeps process open to receive and decrypt incoming messages):
+python3 -m agent_link.cli receive --agent-id my-agent --watch --inbox ~/.agent-link/inbox.jsonl --decrypt
 ```
 
 ### 4. Request a Peer Link
@@ -100,6 +103,8 @@ python3 -m agent_link.cli receive --agent-id my-agent --watch --inbox ~/.agent-l
 # Background inbox listener with real-time decryption on the fly:
 python3 -m agent_link.cli receive --agent-id my-agent --watch --inbox ~/.agent-link/inbox.jsonl --decrypt
 ```
+
+> **Delivery Semantics**: Polling (`receive --once` or `receive --watch`) drains messages from the relay server's ephemeral in-memory buffer. Supplying `--inbox <path>` records envelopes locally in append-only JSONL format on your host.
 
 ### 7. Sever / Revoke Link
 ```bash
