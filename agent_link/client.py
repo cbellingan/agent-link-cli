@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 import json
+import os
+from pathlib import Path
 import time
 import urllib.error
 import urllib.request
@@ -18,6 +20,7 @@ from agent_link.security import (
     AgentLinkTimeoutError,
     AgentLinkTruncatedResponseError,
     ReplayProtector,
+    PeerKeyStore,
 )
 
 
@@ -38,9 +41,24 @@ class AgentLinkClient:
         resolved_id = agent_id or (keypair.agent_id if keypair else None) or "client"
         self.agent_id = resolved_id
         self.registered = False
-        resolved_state_dir = state_dir or (getattr(keypair, "directory", None) if keypair else None)
-        # Replay state only exists when we hold the private keys (outbound signing).
-        self.replay_protector = ReplayProtector(state_dir=resolved_state_dir, agent_id=self.agent_id) if keypair else None
+        if state_dir is not None:
+            resolved_state_dir = Path(state_dir)
+        elif os.environ.get("AGENT_LINK_STATE_DIR"):
+            resolved_state_dir = Path(os.environ["AGENT_LINK_STATE_DIR"])
+        elif keypair and getattr(keypair, "directory", None):
+            resolved_state_dir = getattr(keypair, "directory")
+        else:
+            resolved_state_dir = None
+
+        # Replay and peer key pinning state only exists when we hold the private keys.
+        self.replay_protector = (
+            ReplayProtector(state_dir=resolved_state_dir, agent_id=self.agent_id, server_url=self.server_url)
+            if keypair else None
+        )
+        self.peer_key_store = (
+            PeerKeyStore(state_dir=resolved_state_dir, agent_id=self.agent_id)
+            if keypair else None
+        )
 
     def _make_request(
         self,

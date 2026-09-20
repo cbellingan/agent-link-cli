@@ -25,7 +25,12 @@ from agent_link.client import (
 )
 from agent_link.crypto import AgentKeypair
 from agent_link.qr import display_qr
-from agent_link.security import format_untrusted_box
+from agent_link.security import (
+    format_untrusted_box,
+    process_inbound_envelope,
+    PeerKeyStore,
+    ReplayProtector,
+)
 
 DEFAULT_SERVER = os.getenv("AGENTLINK_SERVER_URL", "http://localhost:3000")
 
@@ -143,6 +148,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_receive.add_argument("--decrypt", action="store_true", help="Decrypt envelopes from --inbox file, or decrypt in real-time in --watch mode")
     p_receive.add_argument("--interval", type=float, default=2.0, help="Seconds between long-poll rounds in --watch mode")
     p_receive.add_argument("--no-auth", action="store_true", help="Poll without an API key; the relay serves read endpoints anonymously")
+    p_receive.add_argument("--allow-plaintext", "--plaintext", dest="allow_plaintext", action="store_true", help="Explicitly allow receiving unencrypted plaintext messages")
 
     # 10. invite (generate secure email invite knowledge / token)
     # 11. invite
@@ -567,6 +573,7 @@ def _watch_batch(
     timeout: int,
     decrypt: bool = False,
     as_json: bool = False,
+    allow_plaintext: bool = False,
 ) -> int:
     """Poll once; append newly seen raw envelopes to the inbox file.
 
@@ -596,52 +603,34 @@ def _watch_batch(
                 }
                 fh.write(json.dumps(record, separators=(",", ":")) + "\n")
                 if decrypt and client.keypair:
-                    sender_id = m.get("senderId", "peer")
-                    link_id = m.get("linkId", "unknown")
-                    payload = m.get("payload")
-                    sender_enc_pub = m.get("senderEncPub")
-                    sender_sign_pub = m.get("senderSignPub")
-                    decrypted_text = ""
-                    is_e2ee = False
-                    is_signed = False
-                    if isinstance(payload, dict) and payload.get("v") == 2:
-                        is_e2ee = True
-                        is_signed = True
-                        try:
-                            client.replay_protector.validate_inbound(
-                                link_id=link_id,
-                                sender_id=sender_id,
-                                seq=payload.get("seq", 0),
-                                timestamp=payload.get("timestamp", 0),
-                            )
-                            decrypted_text = client.keypair.open_envelope(
-                                link_id=link_id,
-                                peer_sign_pub_b64=sender_sign_pub or "",
-                                peer_enc_pub_b64=sender_enc_pub or "",
-                                envelope=payload,
-                            )
-                        except Exception as e:
-                            decrypted_text = f"[REJECTED: {e}]"
-                    elif isinstance(payload, str):
-                        decrypted_text = payload
+                    result = process_inbound_envelope(
+                        m=m,
+                        kp=client.keypair,
+                        replay_protector=client.replay_protector,
+                        peer_key_store=client.peer_key_store,
+                        allow_plaintext=allow_plaintext,
+                    )
 
                     if as_json:
                         print(json.dumps({
                             "received_at": record["received_at"],
                             "sha256": digest,
-                            "linkId": link_id,
-                            "senderId": sender_id,
-                            "text": decrypted_text,
-                            "encrypted": is_e2ee,
-                            "signed": is_signed,
+                            "linkId": result["linkId"],
+                            "senderId": result["senderId"],
+                            "text": result["text"],
+                            "encrypted": result["encrypted"],
+                            "signed": result["signed"],
+                            "verified": result["verified"],
+                            "status": result["status"],
+                            "error": result["error"],
                         }, separators=(",", ":")))
                     else:
                         print(format_untrusted_box(
-                            sender_id=sender_id,
-                            link_id=link_id,
-                            text=decrypted_text,
-                            is_e2ee=is_e2ee,
-                            is_signed=is_signed,
+                            sender_id=result["senderId"],
+                            link_id=result["linkId"],
+                            text=result["text"],
+                            is_e2ee=result["encrypted"],
+                            is_signed=result["signed"],
                         ))
                 else:
                     print(json.dumps(m, separators=(",", ":")))
@@ -659,6 +648,7 @@ def cmd_receive_watch(
     key_dir: Optional[str] = None,
     decrypt: bool = False,
     as_json: bool = False,
+    allow_plaintext: bool = False,
 ) -> int:
     """Daemon mode: long-poll in a loop, durably store raw envelopes, emit new ones.
 
@@ -692,7 +682,7 @@ def cmd_receive_watch(
     try:
         while True:
             try:
-                new_count = _watch_batch(client, inbox_path, seen, timeout, decrypt=decrypt, as_json=as_json)
+                new_count = _watch_batch(client, inbox_path, seen, timeout, decrypt=decrypt, as_json=as_json, allow_plaintext=allow_plaintext)
                 if new_count:
                     print(f"📨 {new_count} new message(s)", file=sys.stderr)
             except (AgentLinkTimeoutError, AgentLinkNetworkError, AgentLinkTruncatedResponseError) as e:
@@ -709,8 +699,10 @@ def cmd_receive_watch(
 def decrypt_inbox_file(
     inbox_path: Path,
     kp: AgentKeypair,
-    replay_protector: ReplayProtector,
+    replay_protector: Optional[ReplayProtector] = None,
+    peer_key_store: Optional[PeerKeyStore] = None,
     as_json: bool = False,
+    allow_plaintext: bool = False,
 ) -> int:
     """Decrypt and verify envelopes recorded in an offline JSONL inbox file."""
     if not inbox_path.exists():
@@ -732,65 +724,35 @@ def decrypt_inbox_file(
         if not isinstance(m, dict):
             continue
 
-        sender_id = m.get("senderId", "peer")
-        link_id = m.get("linkId", "unknown")
-        payload = m.get("payload")
-        is_encrypted = False
-        is_signed = False
-        decrypted_text = ""
-        err_note = None
-
-        if isinstance(payload, dict):
-            sender_enc_pub = m.get("senderEncPub")
-            sender_sign_pub = m.get("senderSignPub")
-
-            if payload.get("v") == 2:
-                is_encrypted = True
-                is_signed = True
-                seq = payload.get("seq", 0)
-                ts = payload.get("timestamp", 0)
-
-                try:
-                    replay_protector.validate_inbound(
-                        link_id=link_id,
-                        sender_id=sender_id,
-                        seq=seq,
-                        timestamp=ts,
-                    )
-                    decrypted_text = kp.open_envelope(
-                        link_id=link_id,
-                        peer_sign_pub_b64=sender_sign_pub or "",
-                        peer_enc_pub_b64=sender_enc_pub or "",
-                        envelope=payload,
-                    )
-                except Exception as sec_err:
-                    err_note = f"Security verification rejected: {sec_err}"
-                    decrypted_text = f"[REJECTED: {sec_err}]"
-            elif "iv" in payload and "data" in payload:
-                is_encrypted = True
-                err_note = "Legacy unauthenticated v1 envelope rejected (v2 required)"
-                decrypted_text = "[REJECTED: Legacy unauthenticated v1 envelope rejected. Protocol v2 with Ed25519 signature is strictly required]"
-        elif isinstance(payload, str):
-            decrypted_text = payload
+        result = process_inbound_envelope(
+            m=m,
+            kp=kp,
+            replay_protector=replay_protector,
+            peer_key_store=peer_key_store,
+            allow_plaintext=allow_plaintext,
+        )
 
         msg_record = {
-            "linkId": link_id,
-            "senderId": sender_id,
-            "text": decrypted_text,
-            "encrypted": is_encrypted,
-            "signed": is_signed,
-            "error": err_note,
+            "linkId": result["linkId"],
+            "senderId": result["senderId"],
+            "text": result["text"],
+            "encrypted": result["encrypted"],
+            "signed": result["signed"],
+            "verified": result["verified"],
+            "status": result["status"],
+            "error": result["error"],
+            "seq": result.get("seq"),
             "receivedAt": raw_entry.get("received_at") if isinstance(raw_entry, dict) else None,
         }
         decrypted_records.append(msg_record)
 
         if not as_json:
             print(format_untrusted_box(
-                sender_id=sender_id,
-                link_id=link_id,
-                text=decrypted_text,
-                is_e2ee=is_encrypted,
-                is_signed=is_signed,
+                sender_id=result["senderId"],
+                link_id=result["linkId"],
+                text=result["text"],
+                is_e2ee=result["encrypted"],
+                is_signed=result["signed"],
             ))
 
     if as_json:
@@ -811,6 +773,7 @@ def cmd_receive(
     decrypt: bool = False,
     interval: float = 2.0,
     no_auth: bool = False,
+    allow_plaintext: bool = False,
 ) -> int:
     if watch:
         if not inbox:
@@ -819,7 +782,7 @@ def cmd_receive(
         return cmd_receive_watch(
             agent_id, server, api_key or "",
             inbox=inbox, interval=interval, timeout=timeout, key_dir=key_dir,
-            decrypt=decrypt, as_json=as_json,
+            decrypt=decrypt, as_json=as_json, allow_plaintext=allow_plaintext,
         )
 
     if inbox:
@@ -830,7 +793,14 @@ def cmd_receive(
             print(f"❌ Error: {e}", file=sys.stderr)
             return 1
         client = AgentLinkClient(server_url=server, api_key=api_key or "", keypair=kp, agent_id=agent_id)
-        return decrypt_inbox_file(Path(inbox), kp, client.replay_protector, as_json=as_json)
+        return decrypt_inbox_file(
+            Path(inbox),
+            kp,
+            replay_protector=client.replay_protector,
+            peer_key_store=client.peer_key_store,
+            as_json=as_json,
+            allow_plaintext=allow_plaintext,
+        )
 
     if not api_key and not no_auth:
         print("❌ Error: API key required (or pass --no-auth for anonymous polling).", file=sys.stderr)
@@ -849,69 +819,34 @@ def cmd_receive(
     try:
         raw_messages = client.poll_messages(timeout_seconds=timeout)
         for m in raw_messages:
-            sender_id = m.get("senderId", "peer")
-            link_id = m.get("linkId", "unknown")
-            payload = m.get("payload")
-            is_encrypted = False
-            is_signed = False
-            decrypted_text = ""
-            err_note = None
-
-            if isinstance(payload, dict):
-                sender_enc_pub = m.get("senderEncPub")
-                sender_sign_pub = m.get("senderSignPub")
-
-                if payload.get("v") == 2:
-                    is_encrypted = True
-                    is_signed = True
-                    seq = payload.get("seq", 0)
-                    ts = payload.get("timestamp", 0)
-
-                    try:
-                        # 1. Validate replay protection & sequence monotonicity
-                        client.replay_protector.validate_inbound(
-                            link_id=link_id,
-                            sender_id=sender_id,
-                            seq=seq,
-                            timestamp=ts,
-                        )
-
-                        # 2. Open signed & context-bound envelope
-                        decrypted_text = kp.open_envelope(
-                            link_id=link_id,
-                            peer_sign_pub_b64=sender_sign_pub or "",
-                            peer_enc_pub_b64=sender_enc_pub or "",
-                            envelope=payload,
-                        )
-                    except Exception as sec_err:
-                        err_note = f"Security verification rejected: {sec_err}"
-                        decrypted_text = f"[REJECTED: {sec_err}]"
-
-                elif "iv" in payload and "data" in payload:
-                    # Legacy v1 unauthenticated envelope rejected (fail-closed against downgrade)
-                    is_encrypted = True
-                    err_note = "Legacy unauthenticated v1 envelope rejected (v2 required)"
-                    decrypted_text = "[REJECTED: Legacy unauthenticated v1 envelope rejected. Protocol v2 with Ed25519 signature is strictly required]"
-            elif isinstance(payload, str):
-                decrypted_text = payload
+            result = process_inbound_envelope(
+                m=m,
+                kp=kp,
+                replay_protector=client.replay_protector,
+                peer_key_store=client.peer_key_store,
+                allow_plaintext=allow_plaintext,
+            )
 
             msg_record = {
-                "linkId": link_id,
-                "senderId": sender_id,
-                "text": decrypted_text,
-                "encrypted": is_encrypted,
-                "signed": is_signed,
-                "error": err_note,
+                "linkId": result["linkId"],
+                "senderId": result["senderId"],
+                "text": result["text"],
+                "encrypted": result["encrypted"],
+                "signed": result["signed"],
+                "verified": result["verified"],
+                "status": result["status"],
+                "error": result["error"],
+                "seq": result.get("seq"),
             }
             processed_messages.append(msg_record)
 
             if not as_json:
                 print(format_untrusted_box(
-                    sender_id=sender_id,
-                    link_id=link_id,
-                    text=decrypted_text,
-                    is_e2ee=is_encrypted,
-                    is_signed=is_signed,
+                    sender_id=result["senderId"],
+                    link_id=result["linkId"],
+                    text=result["text"],
+                    is_e2ee=result["encrypted"],
+                    is_signed=result["signed"],
                 ))
 
         if as_json:
@@ -1064,48 +999,21 @@ def cmd_connect(
                 if m.get("senderSignPub"):
                     last_active_link["peerSignPub"] = m.get("senderSignPub")
 
-                payload = m.get("payload")
-                is_e2ee = False
-                is_signed = False
-                decrypted_text = ""
-
-                if isinstance(payload, dict):
-                    sender_enc = m.get("senderEncPub") or last_active_link.get("peerEncPub")
-                    sender_sign = m.get("senderSignPub") or last_active_link.get("peerSignPub")
-
-                    if payload.get("v") == 2:
-                        is_e2ee = True
-                        is_signed = True
-                        seq = payload.get("seq", 0)
-                        ts = payload.get("timestamp", 0)
-                        try:
-                            client.replay_protector.validate_inbound(
-                                link_id=link_id,
-                                sender_id=sender_id,
-                                seq=seq,
-                                timestamp=ts,
-                            )
-                            decrypted_text = kp.open_envelope(
-                                link_id=link_id,
-                                peer_sign_pub_b64=sender_sign or "",
-                                peer_enc_pub_b64=sender_enc or "",
-                                envelope=payload,
-                            )
-                        except Exception as sec_err:
-                            decrypted_text = f"[SECURITY REJECTION: {sec_err}]"
-                    elif "iv" in payload and "data" in payload:
-                        # Legacy v1 unauthenticated envelope rejected (fail-closed against downgrade)
-                        is_e2ee = True
-                        decrypted_text = "[SECURITY REJECTION: Legacy unauthenticated v1 envelope rejected. Protocol v2 with Ed25519 signature is strictly required]"
-                elif isinstance(payload, str):
-                    decrypted_text = payload
+                result = process_inbound_envelope(
+                    m=m,
+                    kp=kp,
+                    replay_protector=client.replay_protector,
+                    peer_key_store=client.peer_key_store,
+                    allow_plaintext=allow_plaintext,
+                    active_link=last_active_link,
+                )
 
                 print(format_untrusted_box(
-                    sender_id=sender_id,
-                    link_id=link_id,
-                    text=decrypted_text,
-                    is_e2ee=is_e2ee,
-                    is_signed=is_signed,
+                    sender_id=result["senderId"],
+                    link_id=result["linkId"],
+                    text=result["text"],
+                    is_e2ee=result["encrypted"],
+                    is_signed=result["signed"],
                 ))
 
     except KeyboardInterrupt:
@@ -1423,6 +1331,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             decrypt=getattr(args, "decrypt", False),
             interval=args.interval,
             no_auth=args.no_auth,
+            allow_plaintext=getattr(args, "allow_plaintext", False),
         )
     elif args.command == "invite":
         return cmd_invite(
