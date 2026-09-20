@@ -25,6 +25,7 @@ from agent_link.client import (
 )
 from agent_link.crypto import AgentKeypair
 from agent_link.qr import display_qr
+from agent_link.profile import ProfileManager
 from agent_link.security import (
     format_untrusted_box,
     process_inbound_envelope,
@@ -194,6 +195,33 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_bug_res.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys")
     p_bug_res.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
+    # Global connection profile flag
+    parser.add_argument("--profile", help="Named connection profile to use (configured via 'agent-link profile')")
+
+    # 15. profile
+    p_profile = subparsers.add_parser("profile", help="Manage named connection profiles (server URL & default identity)")
+    sub_profile = p_profile.add_subparsers(dest="profile_action", required=True)
+
+    p_p_set = sub_profile.add_parser("set", help="Create or update a named connection profile")
+    p_p_set.add_argument("name", help="Profile name (e.g. 'staging', 'production', 'default')")
+    p_p_set.add_argument("--server", required=True, help="AgentLink relay server URL")
+    p_p_set.add_argument("--agent-id", default=None, help="Default agent ID for this profile")
+    p_p_set.add_argument("--default", action="store_true", help="Set as active/default profile")
+    p_p_set.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    p_p_list = sub_profile.add_parser("list", help="List all configured connection profiles")
+    p_p_list.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    p_p_show = sub_profile.add_parser("show", help="Show details of a profile")
+    p_p_show.add_argument("name", nargs="?", default=None, help="Profile name (defaults to active profile)")
+    p_p_show.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    p_p_use = sub_profile.add_parser("use", help="Set the active connection profile")
+    p_p_use.add_argument("name", help="Profile name to activate")
+
+    p_p_rm = sub_profile.add_parser("remove", aliases=["rm", "delete"], help="Delete a connection profile")
+    p_p_rm.add_argument("name", help="Profile name to remove")
+
     return parser.parse_args(argv)
 
 
@@ -303,18 +331,38 @@ def cmd_whoami(agent_id: str, server: str, api_key: str, key_dir: Optional[str] 
         "kid": kp.kid,
         "signPub": kp.sign_pub_b64,
         "encPub": kp.enc_pub_b64,
+        "serverUrl": server,
         "registered": False,
+        "pollingStatus": "never",
+        "reachable": False,
         "activeLinksCount": 0,
+        "pendingLinksCount": 0,
     }
 
     if api_key:
         client = AgentLinkClient(server_url=server, api_key=api_key, keypair=kp)
         try:
             agents = client.get_agents(agent_id)
-            if any(a.get("id") == agent_id for a in agents):
+            matching = next((a for a in agents if a.get("id") == agent_id), None)
+            if matching:
                 info["registered"] = True
+                last_seen_str = matching.get("lastSeen")
+                if last_seen_str:
+                    try:
+                        last_seen_dt = datetime.fromisoformat(last_seen_str.replace("Z", "+00:00"))
+                        now_dt = datetime.now(timezone.utc)
+                        age_sec = (now_dt - last_seen_dt).total_seconds()
+                        if age_sec <= 120:
+                            info["pollingStatus"] = "active"
+                            info["reachable"] = True
+                        else:
+                            info["pollingStatus"] = "idle"
+                            info["reachable"] = False
+                    except Exception:
+                        info["pollingStatus"] = "unknown"
             links = client.get_links()
             info["activeLinksCount"] = len([l for l in links if l.get("status") == "active"])
+            info["pendingLinksCount"] = len([l for l in links if l.get("status") == "pending_approval"])
         except Exception:
             pass
 
@@ -328,8 +376,13 @@ def cmd_whoami(agent_id: str, server: str, api_key: str, key_dir: Optional[str] 
     print(f"Fingerprint (kid):   {kp.kid}")
     print(f"Signing Public:      {kp.sign_pub_b64}")
     print(f"Encryption Public:   {kp.enc_pub_b64}")
+    print(f"Server URL:          {server}")
     print(f"Server Registration: {'✅ Registered' if info['registered'] else '⚠️ Unregistered'}")
+    polling_label = "🟢 Active (recently polled)" if info["pollingStatus"] == "active" else ("🟡 Idle" if info["pollingStatus"] == "idle" else "⚪ Never")
+    print(f"Polling Status:      {polling_label}")
+    print(f"Reachable:           {'✅ Reachable (polling relay)' if info['reachable'] else '⚠️ Unreachable (idle/not polling)'}")
     print(f"Active Links:        {info['activeLinksCount']}")
+    print(f"Pending Links:       {info['pendingLinksCount']}")
     return 0
 
 
@@ -483,8 +536,14 @@ def cmd_send(
     peer_enc_pub = None
     target_peer_id = to
 
-    if not target_link_id:
-        my_links = client.get_links()
+    my_links = client.get_links()
+
+    if target_link_id:
+        if not target_peer_id:
+            link_obj = next((l for l in my_links if l.get("id") == target_link_id), None)
+            if link_obj:
+                target_peer_id = link_obj.get("agentBId") if link_obj.get("agentAId") == agent_id else link_obj.get("agentAId")
+    else:
         if target_peer_id:
             matching = [l for l in my_links if (l.get("agentAId") == target_peer_id or l.get("agentBId") == target_peer_id) and l.get("status") == "active"]
             if matching:
@@ -494,11 +553,20 @@ def cmd_send(
                 return 1
         else:
             active = [l for l in my_links if l.get("status") == "active"]
-            if active:
+            if len(active) == 0:
+                print(f"❌ Error: No active links found for agent '{agent_id}'. Establish a link in dashboard first.", file=sys.stderr)
+                return 1
+            elif len(active) == 1:
                 target_link_id = active[0].get("id")
                 target_peer_id = active[0].get("agentBId") if active[0].get("agentAId") == agent_id else active[0].get("agentAId")
             else:
-                print("❌ Error: No active links found for this agent. Establish a link in dashboard first.", file=sys.stderr)
+                peers = [active_l.get("agentBId") if active_l.get("agentAId") == agent_id else active_l.get("agentAId") for active_l in active]
+                print(
+                    f"❌ Error: Multiple active links exist ({len(active)}). "
+                    f"You must explicitly specify the peer (--to <PEER_ID>) or link (--link-id <LINK_ID>).\n"
+                    f"   Available active peers: {', '.join(peers)}",
+                    file=sys.stderr,
+                )
                 return 1
 
     # Look up peer public encryption key if peer ID is known
@@ -527,13 +595,13 @@ def cmd_send(
                 recipient_id=target_peer_id,
             )
             if as_json:
-                print(json.dumps({"status": "ok", "delivered": True, "linkId": target_link_id, "encrypted": True, "to": target_peer_id}))
+                print(json.dumps({"status": "ok", "delivered": True, "linkId": target_link_id, "encrypted": True, "to": target_peer_id, "targetPeer": target_peer_id}))
             else:
                 print(f"🚀 [FAIL-CLOSED E2EE] Successfully sent signed & encrypted message to '{target_peer_id}' across {target_link_id}!")
         else:
             client.send_message(link_id=target_link_id, text=msg_text, allow_plaintext=True)
             if as_json:
-                print(json.dumps({"status": "ok", "delivered": True, "linkId": target_link_id, "encrypted": False, "to": target_peer_id}))
+                print(json.dumps({"status": "ok", "delivered": True, "linkId": target_link_id, "encrypted": False, "to": target_peer_id, "targetPeer": target_peer_id}))
             else:
                 print(f"⚠️ [PLAINTEXT] Sent unencrypted message across {target_link_id}!")
         return 0
@@ -735,7 +803,10 @@ def decrypt_inbox_file(
         msg_record = {
             "linkId": result["linkId"],
             "senderId": result["senderId"],
+            "senderType": result.get("senderType", "agent"),
+            "operatorEmail": result.get("operatorEmail"),
             "text": result["text"],
+            "plaintext": result.get("plaintext") or result["text"],
             "encrypted": result["encrypted"],
             "signed": result["signed"],
             "verified": result["verified"],
@@ -830,7 +901,10 @@ def cmd_receive(
             msg_record = {
                 "linkId": result["linkId"],
                 "senderId": result["senderId"],
+                "senderType": result.get("senderType", "agent"),
+                "operatorEmail": result.get("operatorEmail"),
                 "text": result["text"],
+                "plaintext": result.get("plaintext") or result["text"],
                 "encrypted": result["encrypted"],
                 "signed": result["signed"],
                 "verified": result["verified"],
@@ -1264,10 +1338,135 @@ def cmd_bug_resolve(
     return 0
 
 
+def cmd_profile_set(
+    name: str,
+    server: str,
+    agent_id: Optional[str] = None,
+    is_default: bool = False,
+    as_json: bool = False,
+) -> int:
+    mgr = ProfileManager()
+    try:
+        p = mgr.set_profile(name=name, server_url=server, agent_id=agent_id, is_default=is_default)
+        if as_json:
+            print(json.dumps({"status": "ok", "profile": p}, indent=2))
+        else:
+            active_p = mgr.get_profile()
+            is_active = (active_p and active_p.get("name") == name)
+            default_note = " (set as active/default)" if (is_default or is_active) else ""
+            print(f"✅ Profile '{name}' saved successfully{default_note}!")
+            print(f"   Server URL: {p['server_url']}")
+            if p.get("agent_id"):
+                print(f"   Agent ID:   {p['agent_id']}")
+        return 0
+    except Exception as e:
+        if as_json:
+            print(json.dumps({"status": "error", "error": str(e)}))
+        else:
+            print(f"❌ Failed to set profile: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_profile_list(as_json: bool = False) -> int:
+    mgr = ProfileManager()
+    profiles = mgr.list_profiles()
+    if as_json:
+        print(json.dumps({"profiles": profiles}, indent=2))
+        return 0
+
+    if not profiles:
+        print("No profiles configured yet. Create one with: agent-link profile set <NAME> --server <URL>")
+        return 0
+
+    print("Configured Connection Profiles:")
+    for p in profiles:
+        active_marker = "🟢 [ACTIVE]" if p.get("is_active") else "  "
+        agent_str = f" (Agent: {p['agent_id']})" if p.get("agent_id") else ""
+        print(f" {active_marker} {p['name']}: {p['server_url']}{agent_str}")
+    return 0
+
+
+def cmd_profile_show(name: Optional[str] = None, as_json: bool = False) -> int:
+    mgr = ProfileManager()
+    p = mgr.get_profile(name)
+    if not p:
+        if as_json:
+            print(json.dumps({"error": "profile_not_found"}))
+        else:
+            msg = f"Profile '{name}' not found." if name else "No active profile configured."
+            print(f"❌ {msg}", file=sys.stderr)
+        return 1
+
+    if as_json:
+        print(json.dumps(p, indent=2))
+        return 0
+
+    active_p = mgr.get_profile()
+    is_active = (active_p and active_p.get("name") == p["name"])
+    print(f"Profile:       {p['name']}")
+    print(f"Server URL:    {p['server_url']}")
+    print(f"Agent ID:      {p.get('agent_id') or 'None (defaults to identity or flag)'}")
+    print(f"Active:        {'Yes' if is_active else 'No'}")
+    return 0
+
+
+def cmd_profile_use(name: str) -> int:
+    mgr = ProfileManager()
+    try:
+        mgr.use_profile(name)
+        print(f"✅ Active profile switched to '{name}'.")
+        return 0
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_profile_remove(name: str) -> int:
+    mgr = ProfileManager()
+    if mgr.remove_profile(name):
+        print(f"✅ Profile '{name}' removed.")
+        return 0
+    else:
+        print(f"❌ Profile '{name}' not found.", file=sys.stderr)
+        return 1
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     check_cli_secrets_warning(argv)
     args = parse_args(argv)
-    if args.command == "keygen":
+
+    profile_mgr = ProfileManager()
+    profile_name = getattr(args, "profile", None)
+    profile = profile_mgr.get_profile(profile_name)
+
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    if profile and args.command != "profile":
+        has_explicit_server = any(a == "--server" or a.startswith("--server=") for a in raw_argv)
+        if hasattr(args, "server") and not has_explicit_server and profile.get("server_url"):
+            args.server = profile["server_url"]
+
+        has_explicit_agent = any(a == "--agent-id" or a.startswith("--agent-id=") for a in raw_argv)
+        if hasattr(args, "agent_id") and not has_explicit_agent and profile.get("agent_id"):
+            args.agent_id = profile["agent_id"]
+
+    if args.command == "profile":
+        if args.profile_action == "set":
+            return cmd_profile_set(
+                name=args.name,
+                server=args.server,
+                agent_id=args.agent_id,
+                is_default=args.default,
+                as_json=getattr(args, "json", False),
+            )
+        elif args.profile_action == "list":
+            return cmd_profile_list(as_json=getattr(args, "json", False))
+        elif args.profile_action == "show":
+            return cmd_profile_show(name=args.name, as_json=getattr(args, "json", False))
+        elif args.profile_action == "use":
+            return cmd_profile_use(name=args.name)
+        elif args.profile_action in ("remove", "rm", "delete"):
+            return cmd_profile_remove(name=args.name)
+    elif args.command == "keygen":
         return cmd_keygen(
             args.agent_id,
             key_dir=args.key_dir,

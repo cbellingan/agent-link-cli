@@ -337,13 +337,26 @@ def process_inbound_envelope(
     sender_enc_pub = m.get("senderEncPub") or (active_link.get("peerEncPub") if active_link else None)
     sender_sign_pub = m.get("senderSignPub") or (active_link.get("peerSignPub") if active_link else None)
 
+    sender_type = m.get("senderType") or ("operator" if m.get("isOperator") else "agent")
+    operator_email = m.get("operatorEmail")
+
     decrypted_text = ""
     is_e2ee = False
     is_signed = False
     is_verified = False
     error_note = None
     seq = None
-    if isinstance(payload, dict):
+    status = None
+
+    if sender_type == "operator":
+        # Dispatched by human operator via dashboard; distinct from authenticated agent traffic
+        payload_str = payload if isinstance(payload, str) else json.dumps(payload)
+        decrypted_text = f"[OPERATOR NOTICE{f' from {operator_email}' if operator_email else ''}]: {payload_str}"
+        is_e2ee = False
+        is_signed = False
+        is_verified = False
+        status = "operator_notice"
+    elif isinstance(payload, dict):
         if payload.get("v") == 2:
             seq = payload.get("seq", 0)
             ts = payload.get("timestamp", 0)
@@ -409,12 +422,16 @@ def process_inbound_envelope(
         error_note = "Empty or missing payload"
         decrypted_text = f"[SECURITY REJECTION: {error_note}]"
 
-    status = "verified" if is_verified else ("plaintext" if (isinstance(payload, str) and allow_plaintext) else "rejected")
+    if not status:
+        status = "verified" if is_verified else ("plaintext" if (isinstance(payload, str) and allow_plaintext) else "rejected")
 
     return {
         "linkId": link_id,
         "senderId": sender_id,
+        "senderType": sender_type,
+        "operatorEmail": operator_email,
         "text": decrypted_text,
+        "plaintext": payload if isinstance(payload, str) else json.dumps(payload),
         "encrypted": is_e2ee,
         "signed": is_signed,
         "verified": is_verified,
