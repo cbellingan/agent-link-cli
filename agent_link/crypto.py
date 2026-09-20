@@ -11,6 +11,7 @@ import json
 import os
 import stat
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -160,8 +161,10 @@ class AgentKeypair:
         peer_enc_pub_b64: str,
         plaintext: str,
         seq: int,
+        msg_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create signed and encrypted v2 envelope bound to link_id, seq, and recipient."""
+        msg_id_val = msg_id or f"msg_{uuid.uuid4().hex}"
         nonce = os.urandom(16).hex()
         timestamp = int(time.time())
         aad = f"v2:{link_id}:{self.agent_id}:{recipient_id}:{seq}:{nonce}".encode("utf-8")
@@ -178,6 +181,7 @@ class AgentKeypair:
 
         return {
             "v": 2,
+            "msgId": msg_id_val,
             "linkId": link_id,
             "senderId": self.agent_id,
             "recipientId": recipient_id,

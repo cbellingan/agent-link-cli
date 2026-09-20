@@ -7,7 +7,8 @@ from pathlib import Path
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent_link.crypto import AgentKeypair
 from agent_link.qr import create_qr_payload
@@ -41,6 +42,7 @@ class AgentLinkClient:
         resolved_id = agent_id or (keypair.agent_id if keypair else None) or "client"
         self.agent_id = resolved_id
         self.registered = False
+        self.last_lease_id: Optional[str] = None
         if state_dir is not None:
             resolved_state_dir = Path(state_dir)
         elif os.environ.get("AGENT_LINK_STATE_DIR"):
@@ -148,6 +150,7 @@ class AgentLinkClient:
         path = f"/api/agents/{self.agent_id}/poll?timeout={ms}"
         try:
             res = self._make_request(path, method="GET", timeout=timeout_seconds + 5)
+            self.last_lease_id = res.get("leaseId")
             return res.get("messages", [])
         except AgentLinkTimeoutError:
             return []
@@ -156,41 +159,85 @@ class AgentLinkClient:
                 return []
             raise
 
+    def poll_batch(self, timeout_seconds: int = 15) -> Dict[str, Any]:
+        """Long-poll and retrieve full batch containing messages and lease metadata."""
+        ms = timeout_seconds * 1000
+        path = f"/api/agents/{self.agent_id}/poll?timeout={ms}"
+        try:
+            res = self._make_request(path, method="GET", timeout=timeout_seconds + 5)
+            self.last_lease_id = res.get("leaseId")
+            return res
+        except AgentLinkTimeoutError:
+            return {"messages": [], "leaseId": ""}
+        except Exception as e:
+            if "timed out" in str(e).lower() or "504" in str(e):
+                return {"messages": [], "leaseId": ""}
+            raise
+
+    def ack_messages(self, message_ids: List[str], lease_id: Optional[str] = None) -> Dict[str, Any]:
+        """Explicit recipient acknowledgement for leased messages (Feature 9)."""
+        target_lease = lease_id or self.last_lease_id
+        data = {
+            "messageIds": message_ids,
+            "leaseId": target_lease,
+        }
+        return self._make_request(f"/api/agents/{self.agent_id}/ack", method="POST", data=data)
+
+    def nack_messages(self, message_ids: List[str], action: str = "requeue") -> Dict[str, Any]:
+        """Negative acknowledgement / quarantine for corrupted or poison envelopes (Feature 9)."""
+        data = {
+            "messageIds": message_ids,
+            "action": action,
+        }
+        return self._make_request(f"/api/agents/{self.agent_id}/nack", method="POST", data=data)
+
     def send_encrypted(
         self,
         link_id: str,
         peer_enc_pub_b64: str,
         plaintext: str,
         recipient_id: Optional[str] = None,
+        msg_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Encrypt and dispatch signed v2 envelope over an active link."""
         if not self.keypair or not self.replay_protector:
             raise AgentLinkError("send_encrypted() requires the local keypair; this client is identity-less.")
         target_recipient = recipient_id or "peer"
         seq = self.replay_protector.next_outbound_seq(link_id)
+        msg_id_val = msg_id or f"msg_{uuid.uuid4().hex}"
         envelope = self.keypair.create_envelope(
             link_id=link_id,
             recipient_id=target_recipient,
             peer_enc_pub_b64=peer_enc_pub_b64,
             plaintext=plaintext,
             seq=seq,
+            msg_id=msg_id_val,
         )
         data = {
             "senderId": self.agent_id,
             "payload": envelope,
+            "msgId": msg_id_val,
         }
         return self._make_request(f"/api/links/{link_id}/send", method="POST", data=data)
 
-    def send_message(self, link_id: str, text: str, allow_plaintext: bool = False) -> Dict[str, Any]:
+    def send_message(
+        self,
+        link_id: str,
+        text: str,
+        allow_plaintext: bool = False,
+        msg_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Send message via the link message endpoint. Fail-closed unless explicitly allowed."""
         if not allow_plaintext:
             raise AgentLinkSecurityError(
                 "Refusing to send unencrypted plaintext over link. "
                 "Pass 'allow_plaintext=True' or '--plaintext' if you explicitly wish to transmit in the clear."
             )
+        msg_id_val = msg_id or f"msg_{uuid.uuid4().hex}"
         data = {
             "senderId": self.agent_id,
             "payload": text,
+            "msgId": msg_id_val,
         }
         return self._make_request(f"/api/links/{link_id}/message", method="POST", data=data)
 

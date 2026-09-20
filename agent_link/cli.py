@@ -588,22 +588,44 @@ def cmd_send(
 
     try:
         if peer_enc_pub:
-            client.send_encrypted(
+            send_res = client.send_encrypted(
                 link_id=target_link_id,
                 peer_enc_pub_b64=peer_enc_pub,
                 plaintext=msg_text,
                 recipient_id=target_peer_id,
             )
+            msg_id = send_res.get("msgId") or "unknown"
             if as_json:
-                print(json.dumps({"status": "ok", "delivered": True, "linkId": target_link_id, "encrypted": True, "to": target_peer_id, "targetPeer": target_peer_id}))
+                print(json.dumps({
+                    "status": "ok",
+                    "state": "accepted",
+                    "accepted": True,
+                    "delivered": False,
+                    "msgId": msg_id,
+                    "linkId": target_link_id,
+                    "encrypted": True,
+                    "to": target_peer_id,
+                    "targetPeer": target_peer_id,
+                }))
             else:
-                print(f"🚀 [FAIL-CLOSED E2EE] Successfully sent signed & encrypted message to '{target_peer_id}' across {target_link_id}!")
+                print(f"🚀 [FAIL-CLOSED E2EE] Message accepted by relay (id: {msg_id}, state: accepted, awaiting recipient receipt/ack) across {target_link_id}!")
         else:
-            client.send_message(link_id=target_link_id, text=msg_text, allow_plaintext=True)
+            send_res = client.send_message(link_id=target_link_id, text=msg_text, allow_plaintext=True)
+            msg_id = send_res.get("msgId") or "unknown"
             if as_json:
-                print(json.dumps({"status": "ok", "delivered": True, "linkId": target_link_id, "encrypted": False, "to": target_peer_id, "targetPeer": target_peer_id}))
+                print(json.dumps({
+                    "status": "ok",
+                    "state": "accepted",
+                    "accepted": True,
+                    "delivered": False,
+                    "msgId": msg_id,
+                    "linkId": target_link_id,
+                    "encrypted": False,
+                    "to": target_peer_id,
+                    "targetPeer": target_peer_id,
+                }))
             else:
-                print(f"⚠️ [PLAINTEXT] Sent unencrypted message across {target_link_id}!")
+                print(f"⚠️ [PLAINTEXT] Message accepted by relay (id: {msg_id}, state: accepted, unencrypted) across {target_link_id}!")
         return 0
     except Exception as e:
         print(f"❌ Send failed: {e}", file=sys.stderr)
@@ -703,6 +725,14 @@ def _watch_batch(
                 else:
                     print(json.dumps(m, separators=(",", ":")))
         sys.stdout.flush()
+
+        # Feature 9.5: Durably recorded to inbox on disk BEFORE acknowledging to relay!
+        msg_ids_to_ack = [m.get("msgId") for _, m in new_messages if isinstance(m, dict) and m.get("msgId")]
+        if msg_ids_to_ack and client.api_key:
+            try:
+                client.ack_messages(msg_ids_to_ack, lease_id=client.last_lease_id)
+            except Exception:
+                pass
     return len(new_messages)
 
 
@@ -925,6 +955,15 @@ def cmd_receive(
 
         if as_json:
             print(json.dumps({"status": "ok", "messages": processed_messages}, indent=2))
+
+        # Explicit recipient acknowledgement after successful processing
+        msg_ids_to_ack = [m.get("msgId") for m in raw_messages if isinstance(m, dict) and m.get("msgId")]
+        if msg_ids_to_ack and client.api_key:
+            try:
+                client.ack_messages(msg_ids_to_ack, lease_id=client.last_lease_id)
+            except Exception:
+                pass
+
         return 0
     except Exception as e:
         print(f"❌ Error receiving messages: {e}", file=sys.stderr)
