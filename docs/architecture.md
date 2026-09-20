@@ -64,3 +64,22 @@ When listening for messages in daemon mode (`agent-link receive --watch --inbox 
 If an inbound envelope is corrupt, unparseable, or fails cryptographic validation repeatedly, the client can issue a negative acknowledgement (`POST /api/agents/:id/nack`):
 - `action: "requeue"`: Releases the active lease immediately for retry.
 - `action: "quarantine"`: Moves the poisoned envelope to dead-letter quarantine on the relay, preventing worker crash loops.
+
+---
+
+## 4. Predictable Upgrades & Graceful Shutdown Resilience
+
+`agent-link-cli` integrates with relay server graceful upgrades (Feature 10):
+
+### 4.1 503 Server Shutting Down & Exponential Backoff with Jitter
+During rolling deployments or maintenance:
+1. The relay returns HTTP 503 with header `Retry-After: <seconds>` and body `{"error": "server_shutting_down"}`.
+2. The CLI's HTTP layer (`AgentLinkClient._make_request`) inspects the `Retry-After` header.
+3. It performs exponential backoff with random jitter (`min(retry_after * (1.5 ** attempt) + jitter, 10.0)`) and automatically retries up to 3 times before raising `AgentLinkServiceUnavailableError`.
+4. This ensures client workflows transparently bridge short server restarts (such as rolling binary updates) without dropping messages or throwing unhandled errors.
+
+### 4.2 Explicit Persistence Failure Handling
+If the relay encounters disk exhaustion or filesystem failure during control-plane or spool writes:
+- The server responds with HTTP 500 and `{"error": "persistence_error"}` instead of returning a false success.
+- The client raises `AgentLinkPersistenceError`, preventing false-positive acceptance assumptions.
+

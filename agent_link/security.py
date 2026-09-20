@@ -47,6 +47,18 @@ class AgentLinkTruncatedResponseError(AgentLinkNetworkError):
     pass
 
 
+class AgentLinkServiceUnavailableError(AgentLinkError):
+    """Raised on HTTP 503 Service Unavailable (e.g. server shutting down / upgrade)."""
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class AgentLinkPersistenceError(AgentLinkError):
+    """Raised on HTTP 500 when server persistence or spool write fails."""
+    pass
+
+
 # ==========================================
 # 2. Replay Protection & Sequence Tracking
 # ==========================================

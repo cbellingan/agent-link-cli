@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import random
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +21,8 @@ from agent_link.security import (
     AgentLinkNetworkError,
     AgentLinkTimeoutError,
     AgentLinkTruncatedResponseError,
+    AgentLinkServiceUnavailableError,
+    AgentLinkPersistenceError,
     ReplayProtector,
     PeerKeyStore,
 )
@@ -88,7 +91,7 @@ class AgentLinkClient:
 
         req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
 
-        max_attempts = 3 if method.upper() == "GET" else 1
+        max_attempts = 3
         for attempt in range(max_attempts):
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -96,13 +99,35 @@ class AgentLinkClient:
                     return json.loads(resp_data) if resp_data else {}
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode("utf-8")
+                err_json = {}
                 try:
                     err_json = json.loads(err_body)
                     msg = err_json.get("message") or err_json.get("error") or str(e)
                 except Exception:
                     msg = err_body or str(e)
 
-                if e.code in (401, 403):
+                if e.code == 503:
+                    retry_after_str = e.headers.get("Retry-After")
+                    try:
+                        retry_after = float(retry_after_str) if retry_after_str else 1.0
+                    except (ValueError, TypeError):
+                        retry_after = 1.0
+
+                    if attempt < max_attempts - 1:
+                        # Exponential backoff with jitter
+                        jitter = random.uniform(0.05, 0.2)
+                        sleep_seconds = min(retry_after * (1.5 ** attempt) + jitter, 10.0)
+                        time.sleep(sleep_seconds)
+                        continue
+
+                    raise AgentLinkServiceUnavailableError(
+                        f"HTTP 503: {msg}",
+                        retry_after=retry_after,
+                    ) from e
+
+                if e.code == 500 and (err_json.get("error") == "persistence_error" or "persistence" in str(msg).lower()):
+                    raise AgentLinkPersistenceError(f"HTTP 500 persistence_error: {msg}") from e
+                elif e.code in (401, 403):
                     raise AgentLinkAuthError(f"HTTP {e.code}: {msg}") from e
                 elif e.code == 404:
                     raise AgentLinkNotFoundError(f"HTTP 404: {msg}") from e
@@ -118,7 +143,9 @@ class AgentLinkClient:
                     or "remote end closed" in err_str
                 )
 
-                if attempt < max_attempts - 1 and (is_timeout or is_incomplete):
+                # For network timeouts/incomplete reads, only retry idempotent GETs
+                is_get = method.upper() == "GET"
+                if is_get and attempt < max_attempts - 1 and (is_timeout or is_incomplete):
                     time.sleep(0.5 * (attempt + 1))
                     continue
 
