@@ -135,6 +135,33 @@ class TestCliOnboardingHardening(unittest.TestCase):
         self.assertTrue(decrypted["signed"])
         self.assertIsNone(decrypted["error"])
 
+    def test_keygen_overwrite_flag(self):
+        """keygen without --overwrite preserves existing keys; keygen with --overwrite generates fresh keys."""
+        out1 = io.StringIO()
+        with redirect_stdout(out1):
+            ret1 = main(["keygen", "--agent-id", "rot-agent", "--key-dir", str(self.key_dir), "--json"])
+        self.assertEqual(ret1, 0)
+        data1 = json.loads(out1.getvalue())
+
+        # Second run without --overwrite returns same keys
+        out2 = io.StringIO()
+        with redirect_stdout(out2):
+            ret2 = main(["keygen", "--agent-id", "rot-agent", "--key-dir", str(self.key_dir), "--json"])
+        self.assertEqual(ret2, 0)
+        data2 = json.loads(out2.getvalue())
+        self.assertEqual(data1["signPub"], data2["signPub"])
+        self.assertEqual(data1["kid"], data2["kid"])
+
+        # Third run with --overwrite generates fresh keypair
+        out3 = io.StringIO()
+        with redirect_stdout(out3):
+            ret3 = main(["keygen", "--agent-id", "rot-agent", "--key-dir", str(self.key_dir), "--json", "--overwrite"])
+        self.assertEqual(ret3, 0)
+        data3 = json.loads(out3.getvalue())
+        self.assertNotEqual(data1["signPub"], data3["signPub"])
+        self.assertNotEqual(data1["kid"], data3["kid"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

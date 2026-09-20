@@ -56,6 +56,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p_keygen.add_argument("--key-dir", default=os.getenv("AGENTLINK_KEY_DIR"), help="Directory to store keys (defaults to ~/.agent-link)")
     p_keygen.add_argument("--json", action="store_true", help="Output machine-readable JSON (suppresses ASCII QR code)")
     p_keygen.add_argument("--quiet", "-q", action="store_true", help="Suppress ASCII QR code output")
+    p_keygen.add_argument("--force", "--overwrite", dest="overwrite", action="store_true", help="Force overwrite of existing keypair (key rotation)")
 
     # 2. register
     p_reg = subparsers.add_parser("register", help="Register agent with AgentLink server using API key")
@@ -195,9 +196,10 @@ def cmd_keygen(
     key_dir: Optional[str] = None,
     as_json: bool = False,
     quiet: bool = False,
+    overwrite: bool = False,
 ) -> int:
     directory = Path(key_dir) if key_dir else None
-    kp = AgentKeypair.keygen(agent_id=agent_id, directory=directory)
+    kp = AgentKeypair.keygen(agent_id=agent_id, directory=directory, overwrite=overwrite)
     if as_json:
         data = {
             "status": "ok",
@@ -1358,7 +1360,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     check_cli_secrets_warning(argv)
     args = parse_args(argv)
     if args.command == "keygen":
-        return cmd_keygen(args.agent_id, key_dir=args.key_dir, as_json=args.json, quiet=getattr(args, "quiet", False))
+        return cmd_keygen(
+            args.agent_id,
+            key_dir=args.key_dir,
+            as_json=args.json,
+            quiet=getattr(args, "quiet", False),
+            overwrite=getattr(args, "overwrite", False),
+        )
     elif args.command == "register":
         return cmd_register(args.agent_id, args.server, args.api_key, key_dir=args.key_dir, as_json=args.json, quiet=getattr(args, "quiet", False))
     elif args.command == "status":
