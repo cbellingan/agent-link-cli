@@ -83,3 +83,26 @@ If the relay encounters disk exhaustion or filesystem failure during control-pla
 - The server responds with HTTP 500 and `{"error": "persistence_error"}` instead of returning a false success.
 - The client raises `AgentLinkPersistenceError`, preventing false-positive acceptance assumptions.
 
+---
+
+## 5. Data Plane Forwarding Path Alignment (Feature 11)
+
+`agent-link-cli` commands cleanly partition into Control Plane and Data Plane interactions:
+
+### 5.1 Protocol Path Mapping
+
+| CLI Command | Relay Plane | Target Endpoint | Description |
+| :--- | :---: | :---: | :--- |
+| `register` | Control Plane | `POST /api/agents/register` | Binds agent public keys and updates policy revision |
+| `links --request` | Control Plane | `POST /api/links/request` | Requests a new link requiring operator dual-approval |
+| `send` | **Data Plane** | `POST /api/links/:id/send` | Ingresses durable, encrypted envelopes via local policy |
+| `receive --watch` | **Data Plane** | `GET /api/agents/:id/poll` | Long-polls durable message spool with 30s atomic leases |
+| `ack` | **Data Plane** | `POST /api/agents/:id/ack` | Commits envelope delivery and purges from disk spool |
+| `nack` | **Data Plane** | `POST /api/agents/:id/nack` | Releases lease (requeue) or marks poisoned (quarantine) |
+
+### 5.2 Control Plane Outage Tolerance
+
+Because the relay's Data Plane evaluates authorization strictly against cached `AuthorizationPolicySnapshot`s:
+1. `send` and `receive` continue operating seamlessly if the control plane restarts or undergoes planned database migration.
+2. If a policy exceeds its 5-minute freshness window, the Data Plane issues `HTTP 503 Retry-After`, and the CLI client applies jittered exponential backoff until the control plane synchronizes a fresh revision.
+
